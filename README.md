@@ -15,6 +15,124 @@
 - Optional completion callbacks
 - No external dependencies except for the testing framework
 
+## Core Concepts
+
+### Worker Types
+
+The pool supports two types of workers:
+
+1. Stateless Shared Workers:
+   ```go
+   // single worker instance shared between all goroutines
+   worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
+       // process v
+       return nil
+   })
+   
+   p, _ := pool.New[string](5, opts.WithWorker(worker))
+   ```
+   - One worker instance serves all goroutines
+   - Good for stateless operations like HTTP requests, file operations
+   - More memory efficient
+   - No need to synchronize as worker is stateless
+
+2. Per-Worker Instances:
+   ```go
+   // stateful worker with connection
+   type dbWorker struct {
+       conn *sql.DB
+       processed int
+   }
+   
+   func (w *dbWorker) Do(ctx context.Context, v string) error {
+       w.processed++
+       return w.conn.ExecContext(ctx, "INSERT INTO items (value) VALUES (?)", v)
+   }
+   
+   // create new instance for each goroutine
+   workerMaker := func() pool.Worker[string] {
+       w := &dbWorker{
+           conn: openConnection(), // each worker gets own connection
+       }
+       return w
+   }
+   
+   p, _ := pool.New[string](5, opts.WithWorkerMaker(workerMaker))
+   ```
+   - Each goroutine gets its own worker instance
+   - Good for maintaining state or resources (DB connections, caches)
+   - No need for mutex as each instance is used by single goroutine
+   - More memory usage but better isolation
+
+### Batching Processing
+
+Batching reduces channel communication overhead by processing multiple items at once:
+
+```go
+// process items in batches of 10
+opts := pool.Options[string]()
+p, _ := pool.New[string](2,
+    opts.WithWorker(worker),
+    opts.WithBatchSize(10),
+)
+
+// worker receives slices of items
+worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
+    // v is one item from the batch
+    return nil
+})
+```
+
+How batching works:
+1. Pool accumulates submitted items until batch size is reached
+2. Full batch is sent to worker as single channel operation
+3. Worker processes each item in the batch sequentially
+4. Last batch may be smaller if items don't divide evenly
+
+When to use batching:
+- High-volume processing where channel operations are a bottleneck
+- Database operations that can be batched (bulk inserts)
+- Network operations that can be combined
+- When processing overhead per item is low compared to channel communication
+
+### Work Distribution
+
+Control how work is distributed among workers using chunk functions:
+
+```go
+// distribute by first character of string
+p, _ := pool.New[string](3, 
+    opts.WithWorker(worker),
+    opts.WithChunkFn(func(v string) string {
+        return v[:1] // same first char goes to same worker
+    }),
+)
+
+// distribute by user ID to ensure user's tasks go to same worker
+p, _ := pool.New[Task](3,
+    opts.WithWorker(worker),
+    opts.WithChunkFn(func(t Task) string {
+        return strconv.Itoa(t.UserID)
+    }),
+)
+```
+
+How distribution works:
+1. Without chunk function:
+   - Items are distributed randomly among workers
+   - Good for independent tasks
+
+2. With chunk function:
+   - Function returns string key for each item
+   - Items with same key always go to same worker
+   - Uses consistent hashing to map keys to workers
+
+When to use custom distribution:
+- Maintain ordering for related items
+- Optimize cache usage by worker
+- Ensure exclusive access to resources
+- Process user/session data consistently
+
 ## Quick Start
 
 Here's a practical example showing how to process a list of URLs in parallel:
