@@ -209,7 +209,7 @@ func (m *Value) Stats() Stats {
 	// calculate total time as max of time.Since(startTime) and sum of all durations
 	totalTime := time.Since(m.startTime)
 	durationsSum := m.durations[DurationProc] + m.durations[DurationWait] +
-	  m.durations[DurationInit] + m.durations[DurationWrap]
+		m.durations[DurationInit] + m.durations[DurationWrap]
 	if durationsSum > totalTime {
 		totalTime = durationsSum
 	}
