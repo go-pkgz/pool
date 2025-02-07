@@ -1,6 +1,3 @@
-// Package pool provides a simple worker pool implementation with a single stage only.
-// It allows to submit records to the pool and process them in parallel by a number of workers.
-// The pool can be activated once and closed after all records submitted.
 package pool
 
 import (
