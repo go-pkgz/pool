@@ -13,22 +13,6 @@ func Options[T any]() options[T] { //nolint:revive // no need for exporting this
 	return options[T]{}
 }
 
-// WithWorker sets the worker for the pool. This has to be a stateless worker
-// that can be shared between multiple goroutines.
-func (options[T]) WithWorker(w Worker[T]) Option[T] {
-	return func(p *WorkerGroup[T]) {
-		p.worker = w
-	}
-}
-
-// WithWorkerMaker sets the worker maker for the pool. This is used to create
-// a new worker for each goroutine. This is useful when worker has to maintain state.
-func (options[T]) WithWorkerMaker(m WorkerMaker[T]) Option[T] {
-	return func(p *WorkerGroup[T]) {
-		p.workerMaker = m
-	}
-}
-
 // WithChunkFn sets the chunk function, converting a value to some sort of hash.
 // This is used to distribute values to workers predictably.
 func (options[T]) WithChunkFn(fn func(T) string) Option[T] {

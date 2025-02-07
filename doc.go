@@ -1,16 +1,20 @@
 // Package pool provides a simple worker pool implementation with a single stage only.
 // It allows submitting tasks to be processed in parallel by a number of workers.
 //
+// The package supports both stateless and stateful workers through two distinct constructors:
+//   - New - for pools with a single shared worker instance
+//   - NewStateful - for pools where each goroutine gets its own worker instance
+//
 // # Basic Usage
 //
-// To create a new worker pool:
+// For stateless operations (like HTTP requests, parsing operations, etc.):
 //
 //	worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
 //	    // process the value
 //	    return nil
 //	})
 //
-//	p, err := pool.New[string](2, pool.Options[string]().WithWorker(worker))
+//	p, err := pool.New[string](2, worker)
 //	if err != nil {
 //	    return err
 //	}
@@ -27,47 +31,55 @@
 //	    return err
 //	}
 //
+// For stateful operations (like database connections, file handles, etc.):
+//
+//	// create worker maker function
+//	maker := func() pool.Worker[string] {
+//	    return &dbWorker{
+//	        conn: openConnection(),
+//	    }
+//	}
+//
+//	p, err := pool.NewStateful[string](2, maker)
+//	if err != nil {
+//	    return err
+//	}
+//
 // # Features
 //
 // The package provides several key features:
 //
 //   - Generic worker pool implementation supporting any data type
 //   - Configurable number of workers running in parallel
-//   - Support for stateless shared workers or per-worker instances
+//   - Support for both stateless shared workers and per-worker instances
 //   - Batching capability for processing multiple items at once
 //   - Customizable work distribution through chunk functions
 //   - Built-in metrics collection including processing times and counts
 //   - Error handling with options to continue or stop on errors
 //   - Context-based cancellation and timeouts
-//   - Optional completion callbacks for cleanup
+//   - Optional completion callbacks
 //
 // # Advanced Features
 //
 // Batching:
 //
-//	 opts := Options[string]()
-//	 p, _ := New[string](2,
-//		 opts.WithWorker(worker),
-//		 opts.WithBatchSize(10),
-//	 )
+//	p, _ := New[string](2, worker,
+//	    Options[string]().WithBatchSize(10),
+//	)
 //
 // Chunked distribution:
 //
-//	 opts := Options[string]()
-//	 p, _ := New[string](2,
-//		  opts.WithWorker(worker),
-//		  opts.WithChunkFn(func(v string) string {
-//		      return v // items with same hash go to same worker
-//		  }),
+//	p, _ := New[string](2, worker,
+//	    Options[string]().WithChunkFn(func(v string) string {
+//	        return v // items with same hash go to same worker
+//	    }),
 //	)
 //
 // Error handling:
 //
-//	   opts := Options[string]()
-//		  p, _ := New[string](2,
-//				opts.WithWorker(worker),
-//				opts.WithContinueOnError(),
-//			 )
+//	p, _ := New[string](2, worker,
+//	    Options[string]().WithContinueOnError(),
+//	)
 //
 // # Metrics
 //

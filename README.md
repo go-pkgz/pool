@@ -36,9 +36,8 @@ func main() {
     })
 
     // create a pool with 5 workers
-    p, err := pool.New[string](5, pool.Options[string]().
-        WithWorker(worker).
-        WithContinueOnError(), // don't stop on errors
+    p, err := pool.New[string](5, worker,
+        pool.Options[string]().WithContinueOnError(), // don't stop on errors
     )
     if err != nil {
         log.Fatal(err)
@@ -82,6 +81,7 @@ This example demonstrates:
 - Submitting work in a separate goroutine
 - Using Close/Wait for proper shutdown
 - Error handling and metrics collection
+
 
 ## Motivation
 
@@ -130,7 +130,7 @@ The pool supports two types of workers:
        return nil
    })
    
-   p, _ := pool.New[string](5, opts.WithWorker(worker))
+   p, _ := pool.New[string](5, worker)
    ```
    - One worker instance serves all goroutines
    - Good for stateless operations like HTTP requests, file operations
@@ -151,14 +151,14 @@ The pool supports two types of workers:
    }
    
    // create new instance for each goroutine
-   workerMaker := func() pool.Worker[string] {
+   maker := func() pool.Worker[string] {
        w := &dbWorker{
            conn: openConnection(), // each worker gets own connection
        }
        return w
    }
    
-   p, _ := pool.New[string](5, opts.WithWorkerMaker(workerMaker))
+   p, _ := pool.NewStateful[string](5, maker)
    ```
    - Each goroutine gets its own worker instance
    - Good for maintaining state or resources (DB connections, caches)
@@ -172,12 +172,11 @@ Batching reduces channel communication overhead by processing multiple items at 
 ```go
 // process items in batches of 10
 opts := pool.Options[string]()
-p, _ := pool.New[string](2,
-    opts.WithWorker(worker),
+p, _ := pool.New[string](2, worker,
     opts.WithBatchSize(10),
 )
 
-// worker receives slices of items
+// worker receives items one by one
 worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
     // v is one item from the batch
     return nil
@@ -202,17 +201,15 @@ Control how work is distributed among workers using chunk functions:
 
 ```go
 // distribute by first character of string
-p, _ := pool.New[string](3, 
-    opts.WithWorker(worker),
-    opts.WithChunkFn(func(v string) string {
+p, _ := pool.New[string](3, worker, 
+    pool.Options[string]().WithChunkFn(func(v string) string {
         return v[:1] // same first char goes to same worker
     }),
 )
 
 // distribute by user ID to ensure user's tasks go to same worker
-p, _ := pool.New[Task](3,
-    opts.WithWorker(worker),
-    opts.WithChunkFn(func(t Task) string {
+p, _ := pool.New[Task](3, worker,
+    pool.Options[Task]().WithChunkFn(func(t Task) string {
         return strconv.Itoa(t.UserID)
     }),
 )
@@ -234,239 +231,7 @@ When to use custom distribution:
 - Ensure exclusive access to resources
 - Process user/session data consistently
 
-
-## Architecture and Components
-
-The package consists of several key components that work together:
-
-### WorkerGroup
-
-The core component managing the worker pool. It:
-- Maintains a pool of goroutines (workers)
-- Handles work distribution
-- Manages worker lifecycles
-- Coordinates error handling
-- Collects metrics
-
-```go
-type WorkerGroup[T any] struct {
-    // configuration options
-    poolSize  int
-    batchSize int
-    // ...
-}
-```
-
-### Worker Interface
-
-Defines the contract for workers processing tasks:
-
-```go
-type Worker[T any] interface {
-    Do(ctx context.Context, v T) error
-}
-```
-
-The package provides `WorkerFunc` adapter to turn simple functions into `Worker` interface:
-
-```go
-// WorkerFunc adapts a function to Worker interface
-type WorkerFunc[T any] func(ctx context.Context, v T) error
-
-// Do implements Worker interface
-func (f WorkerFunc[T]) Do(ctx context.Context, v T) error { 
-    return f(ctx, v) 
-}
-```
-
-You can implement workers in two ways:
-1. Using `WorkerFunc` for stateless functions:
-   ```go
-   worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
-       fmt.Println(v)
-       return nil
-   })
-   ```
-
-2. Creating a struct that implements `Worker` interface:
-   ```go
-   type customWorker struct {
-       count int // worker state
-   }
-   
-   func (w *customWorker) Do(ctx context.Context, v string) error {
-       w.count++
-       return nil
-   }
-   ```
-
-### Options
-
-Configures the worker pool through a fluent API:
-
-```go
-opts := pool.Options[string]()
-p, err := pool.New[string](2,
-    opts.WithWorker(worker),            // set worker implementation
-    opts.WithWorkerMaker(workerMaker),  // or use factory for stateful workers
-    opts.WithBatchSize(10),             // process items in batches
-    opts.WithWorkerChanSize(5),         // set worker channel buffer size
-    opts.WithChunkFn(chunkFn),          // control work distribution
-    opts.WithContext(ctx),              // set custom context
-    opts.WithContinueOnError(),         // don't stop on errors
-    opts.WithCompleteFn(completeFn),    // called when worker finishes
-)
-```
-
-Key Options:
-
-- `WithWorker(w Worker[T])` - sets a stateless worker implementation that is shared between goroutines
-- `WithWorkerMaker(fn func() Worker[T])` - provides a factory to create new worker instance for each goroutine, useful for stateful workers
-- `WithBatchSize(size int)` - enables batch processing, accumulating items before sending to workers. This can improve performance by reducing channel communication overhead
-- `WithWorkerChanSize(size int)` - sets buffer size for worker channels. Default is 1. Larger sizes can help smooth out processing when workload is uneven
-- `WithChunkFn(fn func(T) string)` - controls work distribution by mapping items to workers based on the returned string hash
-- `WithContext(ctx context.Context)` - sets custom context for cancellation and timeouts. If not set, background context is used
-- `WithContinueOnError()` - configures pool to continue processing when errors occur. By default, pool stops on first error
-- `WithCompleteFn(fn func(ctx, id, worker))` - sets function called when worker finishes, useful for cleanup and resource management
-
-Options are mutually exclusive:
-- Cannot use both `WithWorker` and `WithWorkerMaker`
-- `WithContext` overrides any previous context
-
-### Collector
-
-Handles result collection from workers:
-- Thread-safe submission
-- Iterator-based retrieval
-- Bulk collection
-- Context cancellation support
-
-### Metrics
-
-The pool automatically collects comprehensive metrics for monitoring and debugging. Metrics are collected per worker and can be aggregated across all workers.
-
-Available metrics:
-
-1. Counters:
-   ```go
-   const (
-       CountProcessed = "processed" // number of processed items
-       CountErrors    = "errors"    // number of errors
-       CountDropped   = "dropped"   // number of dropped items
-   )
-   ```
-
-2. Durations:
-   ```go
-   const (
-       DurationWait = "wait"  // time spent waiting for work
-       DurationProc = "proc"  // time spent processing work
-       DurationInit = "init"  // time spent initializing
-       DurationWrap = "wrap"  // time spent wrapping up/finalizing
-       DurationFull = "total" // total time since start
-   )
-   ```
-
-Access metrics in two ways:
-
-1. As a structured Stats object:
-   ```go
-   stats := p.Metrics().Stats()
-   fmt.Printf("Processed: %d\n", stats.Processed)
-   fmt.Printf("Errors: %d\n", stats.Errors)
-   fmt.Printf("Processing time: %v\n", stats.ProcessingTime)
-   fmt.Printf("Wait time: %v\n", stats.WaitTime)
-   fmt.Printf("Total time: %v\n", stats.TotalTime)
-   ```
-
-2. Raw access to individual metrics:
-   ```go
-   m := p.Metrics()
-   processed := m.Get(metrics.CountProcessed)
-   procTime := m.GetDuration(metrics.DurationProc)
-   ```
-
-Timing helpers for custom measurements:
-```go
-worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
-    m := metrics.Get(ctx)
-    
-    // track processing time
-    procEnd := m.StartTimer(metrics.DurationProc)
-    defer procEnd()
-    
-    // track custom timing
-    customEnd := m.StartTimer("my-operation")
-    defer customEnd()
-    
-    // increment custom counter
-    m.Inc("my-counter")
-    
-    return nil
-})
-```
-
-Metrics are thread-safe and can be accessed at any time. The pool automatically aggregates metrics from all workers when you call `p.Metrics()`.
-
-### Flow
-
-1. Pool Creation and Configuration:
-   ```go
-   p, _ := pool.New[T](size, options...)
-   ```
-
-2. Pool Activation:
-   ```go
-   p.Go(ctx)
-   ```
-
-3. Work Submission:
-   ```go
-   p.Submit(task)  // can be called multiple times
-   ```
-
-4. Processing:
-   - Tasks are distributed to workers
-   - Optional batching occurs
-   - Workers process tasks
-   - Metrics are collected
-   - Results are optionally collected
-
-5. Completion:
-   The package provides two methods for completion:
-   ```go
-   // Close tells workers no more data will be submitted
-   // Used by the producer (sender) of data
-   p.Close(ctx)  
-
-   // Wait blocks until all processing is done
-   // Used by the consumer (receiver) of results
-   p.Wait(ctx)   
-   ```
-
-   Typical producer/consumer pattern:
-   ```go
-   // Producer goroutine
-   go func() {
-       defer p.Close(ctx) // signal no more data
-       for _, task := range tasks {
-           p.Submit(task)
-       }
-   }()
-
-   // Consumer waits for completion
-   if err := p.Wait(ctx); err != nil {
-       // handle error
-   }
-   ```
-
-## Install and update
-
-```bash
-go get -u github.com/go-pkgz/pool
-```
-
-## Usage
+## Usage Examples
 
 ### Basic Example
 
@@ -479,7 +244,7 @@ func main() {
     })
 
     // create a pool with 2 workers
-    p, err := pool.New[string](2, pool.Options[string]().WithWorker(worker))
+    p, err := pool.New[string](2, worker)
     if err != nil {
         log.Fatal(err)
     }
@@ -501,35 +266,19 @@ func main() {
 }
 ```
 
-### Processing with Batching
-
-```go
-// process items in batches of 10
-opts := pool.Options[string]()
-p, _ := pool.New[string](2, opts.WithWorker(worker), opts.WithBatchSize(10))
-```
-
-### Controlled Work Distribution
-
-```go
-// items with the same hash go to the same worker
-opts := pool.Options[string]()
-p, _ := pool.New[string](2,
-    opts.WithWorker(worker),
-    opts.WithChunkFn(func(v string) string {
-        return v[:1] // distribute by first character
-    }),
-)
-```
-
 ### Error Handling
 
 ```go
+worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
+    if strings.Contains(v, "error") {
+        return fmt.Errorf("failed to process %s", v)
+    }
+    return nil
+})
+
 // continue processing on errors
-opts := pool.Options[string]()
-p, _ := pool.New[string](2,
-    opts.WithWorker(worker),
-    opts.WithContinueOnError(),
+p, _ := pool.New[string](2, worker,
+    pool.Options[string]().WithContinueOnError(),
 )
 ```
 
@@ -546,6 +295,8 @@ worker := pool.WorkerFunc[Input](func(ctx context.Context, v Input) error {
     return nil
 })
 
+p, _ := pool.New[Input](2, worker)
+
 // get results through iteration
 for v, err := range collector.Iter() {
     if err != nil {
@@ -561,23 +312,21 @@ results, err := collector.All()
 ### Worker State Management
 
 ```go
-// stateful worker example
-type statefulWorker struct {
+// stateful worker with counter
+type countingWorker struct {
     count int
 }
 
 // create new worker for each goroutine
-workerMaker := func() pool.Worker[string] {
-    w := &statefulWorker{}
+maker := func() pool.Worker[string] {
+    w := &countingWorker{}
     return pool.WorkerFunc[string](func(ctx context.Context, v string) error {
         w.count++
         return nil
     })
 }
 
-p, _ := pool.New[string](2,
-    pool.Options[string]().WithWorkerMaker(workerMaker),
-)
+p, _ := pool.NewStateful[string](2, maker)
 ```
 
 ### Metrics and Monitoring
@@ -609,7 +358,7 @@ worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
 })
 
 // create and run pool
-p, _ := pool.New[string](2, pool.Options[string]().WithWorker(worker))
+p, _ := pool.New[string](2, worker)
 p.Go(context.Background())
 
 // process some work
@@ -683,13 +432,15 @@ func Example_chainedCalculation() {
     })
 
     // create and start both pools
-    pool1, _ := pool.New[int](3, pool.Options[int]().WithWorker(fibWorker))
+    pool1, _ := pool.New[int](3, fibWorker)
     pool1.Go(context.Background())
 
-    pool2, _ := pool.New[FibResult](2, pool.Options[FibResult]().WithWorker(factorsWorker))
+    pool2, _ := pool.NewStateful[FibResult](2, func() pool.Worker[FibResult] {
+        return factorsWorker
+    })
     pool2.Go(context.Background())
 
-    // submit work to stage 1
+    // submit numbers to calculate
     numbers := []int{5, 7, 10}
     for _, n := range numbers {
         pool1.Submit(n)
@@ -711,12 +462,82 @@ func Example_chainedCalculation() {
     pool2.Close(context.Background())
     stage2Collector.Close()
 
-    // collect and print final results
+    // collect and sort final results to ensure deterministic output order
     results, _ := stage2Collector.All()
-    for _, res := range results {
+    sort.Slice(results, func(i, j int) bool {
+        return results[i].n < results[j].n
+    })
+
+    // print results in sorted order
+	for _, res := range results {
         fmt.Printf("number %d has factors %v\n", res.n, res.factors)
     }
+
+    // Output:
+    // number 5 has factors [5]
+    // number 13 has factors [13]
+    // number 55 has factors [5 11]
 }
+```
+
+## Flow Control
+
+The package provides two methods for completion:
+
+```go
+// Close tells workers no more data will be submitted
+// Used by the producer (sender) of data
+p.Close(ctx)  
+
+// Wait blocks until all processing is done
+// Used by the consumer (receiver) of results
+p.Wait(ctx)   
+```
+
+Typical producer/consumer pattern:
+```go
+// Producer goroutine
+go func() {
+    defer p.Close(ctx) // signal no more data
+    for _, task := range tasks {
+        p.Submit(task)
+    }
+}()
+
+// Consumer waits for completion
+if err := p.Wait(ctx); err != nil {
+    // handle error
+}
+```
+
+## Options
+
+Configure pool behavior using options:
+
+```go
+opts := pool.Options[string]()
+p, err := pool.New[string](2, worker,
+    opts.WithBatchSize(10),             // process items in batches
+    opts.WithWorkerChanSize(5),         // set worker channel buffer size
+    opts.WithChunkFn(chunkFn),          // control work distribution
+    opts.WithContext(ctx),              // set custom context
+    opts.WithContinueOnError(),         // don't stop on errors
+    opts.WithCompleteFn(completeFn),    // called when worker finishes
+)
+```
+
+Available options:
+- `WithBatchSize(size int)` - enables batch processing, accumulating items before sending to workers
+- `WithWorkerChanSize(size int)` - sets buffer size for worker channels
+- `WithChunkFn(fn func(T) string)` - controls work distribution by key
+- `WithContext(ctx context.Context)` - sets custom context for cancellation
+- `WithContinueOnError()` - continues processing on errors
+- `WithCompleteFn(fn func(ctx, id, worker))` - called on worker completion
+
+## Install and update
+
+```bash
+go get -u github.com/go-pkgz/pool
 ```
 
 ## Contributing

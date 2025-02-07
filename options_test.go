@@ -8,25 +8,6 @@ import (
 )
 
 func TestOptions(t *testing.T) {
-	t.Run("worker and worker maker are mutually exclusive", func(t *testing.T) {
-		opts := Options[string]()
-		worker := WorkerFunc[string](func(ctx context.Context, v string) error { return nil })
-		workerMaker := func() Worker[string] { return worker }
-
-		// both worker and maker provided should fail
-		_, err := New[string](1,
-			opts.WithWorker(worker),
-			opts.WithWorkerMaker(workerMaker),
-		)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "both worker and worker maker provided")
-
-		// neither worker nor maker provided should fail
-		_, err = New[string](1)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "worker or worker maker not provided")
-	})
-
 	t.Run("options are properly applied", func(t *testing.T) {
 		opts := Options[string]()
 		worker := WorkerFunc[string](func(ctx context.Context, v string) error { return nil })
@@ -36,8 +17,7 @@ func TestOptions(t *testing.T) {
 		completeFn := func(ctx context.Context, id int, w Worker[string]) error { return nil }
 		chunkFn := func(v string) string { return v }
 
-		p, err := New[string](2,
-			opts.WithWorker(worker),
+		p, err := New[string](2, worker,
 			opts.WithBatchSize(10),
 			opts.WithWorkerChanSize(5),
 			opts.WithContext(customCtx),
@@ -63,17 +43,16 @@ func TestOptions(t *testing.T) {
 		require.Equal(t, 5, cap(p.workersCh[1]))
 	})
 
-	t.Run("worker maker creates new instances", func(t *testing.T) {
+	t.Run("stateful worker creates new instances", func(t *testing.T) {
 		opts := Options[string]()
-
 		workerMaker := func() Worker[string] {
 			return WorkerFunc[string](func(ctx context.Context, v string) error {
 				return nil
 			})
 		}
 
-		p, err := New[string](2,
-			opts.WithWorkerMaker(workerMaker),
+		p, err := NewStateful[string](2, workerMaker,
+			opts.WithBatchSize(10),
 		)
 		require.NoError(t, err)
 		require.Nil(t, p.worker)
@@ -81,12 +60,9 @@ func TestOptions(t *testing.T) {
 	})
 
 	t.Run("default values are set when options not provided", func(t *testing.T) {
-		opts := Options[string]()
 		worker := WorkerFunc[string](func(ctx context.Context, v string) error { return nil })
 
-		p, err := New[string](1,
-			opts.WithWorker(worker),
-		)
+		p, err := New[string](1, worker)
 		require.NoError(t, err)
 
 		// verify defaults

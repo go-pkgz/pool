@@ -28,7 +28,7 @@ func TestPool_Basic(t *testing.T) {
 		return nil
 	})
 
-	p, err := New[string](2, Options[string]().WithWorker(worker))
+	p, err := New[string](2, worker)
 	require.NoError(t, err)
 	require.NoError(t, p.Go(context.Background()))
 
@@ -59,10 +59,7 @@ func TestPool_Batching(t *testing.T) {
 	})
 
 	opts := Options[string]()
-	p, err := New[string](1,
-		opts.WithWorker(worker),
-		opts.WithBatchSize(batchSize),
-	)
+	p, err := New[string](1, worker, opts.WithBatchSize(batchSize))
 	require.NoError(t, err)
 	require.NoError(t, p.Go(context.Background()))
 
@@ -89,8 +86,7 @@ func TestPool_ChunkDistribution(t *testing.T) {
 	})
 
 	opts := Options[string]()
-	p, err := New[string](2,
-		opts.WithWorker(worker),
+	p, err := New[string](2, worker,
 		opts.WithChunkFn(func(v string) string { return v }),
 	)
 	require.NoError(t, err)
@@ -119,7 +115,7 @@ func TestPool_ErrorHandling_StopOnError(t *testing.T) {
 		return nil
 	})
 
-	p, err := New[string](1, Options[string]().WithWorker(worker))
+	p, err := New[string](1, worker)
 	require.NoError(t, err)
 	require.NoError(t, p.Go(context.Background()))
 
@@ -145,10 +141,7 @@ func TestPool_ErrorHandling_ContinueOnError(t *testing.T) {
 	})
 
 	opts := Options[string]()
-	p, err := New[string](1,
-		opts.WithWorker(worker),
-		opts.WithContinueOnError(),
-	)
+	p, err := New[string](1, worker, opts.WithContinueOnError())
 	require.NoError(t, err)
 	require.NoError(t, p.Go(context.Background()))
 
@@ -171,7 +164,7 @@ func TestPool_ContextCancellation(t *testing.T) {
 		}
 	})
 
-	p, err := New[string](1, Options[string]().WithWorker(worker))
+	p, err := New[string](1, worker)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -197,10 +190,7 @@ func TestPool_WorkerCompletion(t *testing.T) {
 	}
 
 	opts := Options[string]()
-	p, err := New[string](2,
-		opts.WithWorker(worker),
-		opts.WithCompleteFn(completeFn),
-	)
+	p, err := New[string](2, worker, opts.WithCompleteFn(completeFn))
 	require.NoError(t, err)
 	require.NoError(t, p.Go(context.Background()))
 	require.NoError(t, p.Close(context.Background()))
@@ -224,10 +214,7 @@ func TestPool_StatefulWorker(t *testing.T) {
 	}
 
 	opts := Options[string]()
-	p, err := New[string](2,
-		opts.WithWorkerMaker(workerMaker),
-		opts.WithWorkerChanSize(5), // allow more concurrent processing
-	)
+	p, err := NewStateful[string](2, workerMaker, opts.WithWorkerChanSize(5))
 	require.NoError(t, err)
 	require.NoError(t, p.Go(context.Background()))
 
@@ -250,7 +237,7 @@ func TestPool_Wait(t *testing.T) {
 		return nil
 	})
 
-	p, err := New[string](2, Options[string]().WithWorker(worker))
+	p, err := New[string](2, worker)
 	require.NoError(t, err)
 	require.NoError(t, p.Go(context.Background()))
 
@@ -285,7 +272,7 @@ func TestPool_Wait_WithError(t *testing.T) {
 		return nil
 	})
 
-	p, err := New[string](1, Options[string]().WithWorker(worker))
+	p, err := New[string](1, worker)
 	require.NoError(t, err)
 	require.NoError(t, p.Go(context.Background()))
 
@@ -309,7 +296,7 @@ func TestPool_Distribution(t *testing.T) {
 			return nil
 		})
 
-		p, err := New[int](2, Options[int]().WithWorker(worker))
+		p, err := New[int](2, worker)
 		require.NoError(t, err)
 		require.NoError(t, p.Go(context.Background()))
 
@@ -333,8 +320,7 @@ func TestPool_Distribution(t *testing.T) {
 		})
 
 		opts := Options[int]()
-		p, err := New[int](2,
-			opts.WithWorker(worker),
+		p, err := New[int](2, worker,
 			opts.WithChunkFn(func(v int) string {
 				return fmt.Sprintf("key-%d", v%10) // 10 different keys
 			}),
@@ -366,7 +352,7 @@ func TestPool_Metrics(t *testing.T) {
 			return nil
 		})
 
-		p, err := New[int](2, Options[int]().WithWorker(worker))
+		p, err := New[int](2, worker)
 		require.NoError(t, err)
 		require.NoError(t, p.Go(context.Background()))
 
@@ -391,8 +377,7 @@ func TestPool_Metrics(t *testing.T) {
 			return nil
 		})
 
-		p, err := New[int](2,
-			Options[int]().WithWorker(worker),
+		p, err := New[int](2, worker,
 			Options[int]().WithContinueOnError(),
 		)
 		require.NoError(t, err)
@@ -415,8 +400,7 @@ func TestPool_Metrics(t *testing.T) {
 			return nil
 		})
 
-		p, err := New[int](2,
-			Options[int]().WithWorker(worker),
+		p, err := New[int](2, worker,
 			Options[int]().WithBatchSize(3),
 		)
 		require.NoError(t, err)
@@ -442,7 +426,7 @@ func TestPool_Metrics(t *testing.T) {
 			return nil
 		})
 
-		p, err := New[int](2, Options[int]().WithWorker(worker))
+		p, err := New[int](2, worker)
 		require.NoError(t, err)
 		require.NoError(t, p.Go(context.Background()))
 
@@ -471,7 +455,7 @@ func TestPool_MetricsAsStruct(t *testing.T) {
 		return nil
 	})
 
-	p, err := New[int](2, Options[int]().WithWorker(worker))
+	p, err := New[int](2, worker)
 	require.NoError(t, err)
 	require.NoError(t, p.Go(context.Background()))
 

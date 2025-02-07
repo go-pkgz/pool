@@ -58,21 +58,24 @@ type WorkerMaker[T any] func() Worker[T]
 type CompleteFn[T any] func(ctx context.Context, id int, worker Worker[T]) error
 
 // Send func called by worker code to publish results
-type Send[OUT any] func(val OUT) error
+type Send[T any] func(val T) error
 
-// New creates worker pool, can be activated once
-func New[T any](poolSize int, opts ...Option[T]) (*WorkerGroup[T], error) {
-	if poolSize < 1 {
-		poolSize = 1
+// New creates a worker pool with a shared, stateless worker.
+// Size defines the number of goroutines (workers) processing requests.
+func New[T any](size int, worker Worker[T], opts ...Option[T]) (*WorkerGroup[T], error) {
+	if size < 1 {
+		size = 1
+	}
+	if worker == nil {
+		return nil, fmt.Errorf("worker cannot be nil")
 	}
 
 	res := &WorkerGroup[T]{
-		poolSize:       poolSize,
-		workersCh:      make([]chan []T, poolSize),
-		buf:            make([][]T, poolSize),
-		workerCtxs:     make([]context.Context, poolSize),
-		completeFn:     nil, // no worker completion func by default
-		chunkFn:        nil, // no custom chunkFn (workers distribution), random by default
+		poolSize:       size,
+		workersCh:      make([]chan []T, size),
+		buf:            make([][]T, size),
+		workerCtxs:     make([]context.Context, size),
+		worker:         worker,
 		batchSize:      1,
 		workerChanSize: 1,
 		ctx:            context.Background(),
@@ -84,20 +87,50 @@ func New[T any](poolSize int, opts ...Option[T]) (*WorkerGroup[T], error) {
 		opt(res)
 	}
 
-	// verify worker or worker maker provided
-	if res.worker == nil && res.workerMaker == nil {
-		return nil, fmt.Errorf("worker or worker maker not provided")
+	// initialize worker's channels and batch buffers
+	for id := 0; id < size; id++ {
+		res.workersCh[id] = make(chan []T, res.workerChanSize)
+		if res.batchSize > 1 {
+			res.buf[id] = make([]T, 0, size)
+		}
 	}
-	// verify if both worker and worker maker provided
-	if res.worker != nil && res.workerMaker != nil {
-		return nil, fmt.Errorf("both worker and worker maker provided")
+
+	return res, nil
+}
+
+// NewStateful creates a worker pool with a separate worker instance for each goroutine.
+// Size defines number of goroutines (workers) processing requests.
+// Maker function is called for each goroutine to create a new worker instance.
+func NewStateful[T any](size int, maker func() Worker[T], opts ...Option[T]) (*WorkerGroup[T], error) {
+	if size < 1 {
+		size = 1
+	}
+	if maker == nil {
+		return nil, fmt.Errorf("worker maker cannot be nil")
+	}
+
+	res := &WorkerGroup[T]{
+		poolSize:       size,
+		workersCh:      make([]chan []T, size),
+		buf:            make([][]T, size),
+		workerCtxs:     make([]context.Context, size),
+		workerMaker:    maker,
+		batchSize:      1,
+		workerChanSize: 1,
+		ctx:            context.Background(),
+	}
+	res.err.ch = make(chan struct{})
+
+	// apply all options
+	for _, opt := range opts {
+		opt(res)
 	}
 
 	// initialize worker's channels and batch buffers
-	for id := 0; id < poolSize; id++ {
+	for id := 0; id < size; id++ {
 		res.workersCh[id] = make(chan []T, res.workerChanSize)
 		if res.batchSize > 1 {
-			res.buf[id] = make([]T, 0, poolSize)
+			res.buf[id] = make([]T, 0, size)
 		}
 	}
 
@@ -169,9 +202,12 @@ func (p *WorkerGroup[T]) workerProc(wCtx context.Context, id int, inCh chan []T)
 
 		m := metrics.Get(wCtx)
 
-		worker := p.worker // use worker if provided, stateless
-		if worker == nil {
-			worker = p.workerMaker() // create new worker for each goroutine
+		// get worker instance based on mode
+		var worker Worker[T]
+		if p.worker != nil {
+			worker = p.worker // use shared worker for stateless mode
+		} else {
+			worker = p.workerMaker() // create new worker instance for stateful mode
 		}
 
 		// track initialization time
@@ -204,8 +240,6 @@ func (p *WorkerGroup[T]) workerProc(wCtx context.Context, id int, inCh chan []T)
 						m.Inc(metrics.CountDropped)
 						continue
 					}
-
-					// Removed procEndTmr since it's now handled in the worker
 
 					if err := worker.Do(wCtx, v); err != nil {
 						m.Inc(metrics.CountErrors)

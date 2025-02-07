@@ -21,7 +21,7 @@ func Example_basic() {
 		return nil
 	})
 
-	p, _ := New[int](2, Options[int]().WithWorker(worker))
+	p, _ := New[int](2, worker)
 	if err := p.Go(context.Background()); err != nil {
 		panic(err) // handle error, don't panic in real code
 	}
@@ -58,8 +58,7 @@ func Example_withBatching() {
 	})
 
 	opts := Options[int]()
-	p, _ := New[int](2,
-		opts.WithWorker(worker),
+	p, _ := New[int](2, worker,
 		opts.WithBatchSize(2), // process items in batches of 2
 	)
 	p.Go(context.Background())
@@ -96,8 +95,7 @@ func Example_withRouting() {
 
 	// create pool with chunk function that routes based on even/odd
 	opts := Options[int]()
-	p, _ := New[int](2,
-		opts.WithWorker(worker),
+	p, _ := New[int](2, worker,
 		opts.WithChunkFn(func(v int) string {
 			if v%2 == 0 {
 				return "even"
@@ -144,8 +142,7 @@ func Example_withError() {
 	})
 
 	opts := Options[int]()
-	p, _ := New[int](1,
-		opts.WithWorker(worker),
+	p, _ := New[int](1, worker,
 		opts.WithContinueOnError(), // don't stop on errors
 	)
 	p.Go(context.Background())
@@ -184,7 +181,7 @@ func Example_withContext() {
 		return ctx.Err()
 	})
 
-	p, _ := New[int](1, Options[int]().WithWorker(worker))
+	p, _ := New[int](1, worker)
 	p.Go(ctx)
 	p.Submit(1)
 
@@ -217,7 +214,7 @@ func Example_withCollector() {
 	})
 
 	// create and start pool
-	p, _ := New[int](2, Options[int]().WithWorker(worker))
+	p, _ := New[int](2, worker)
 	p.Go(context.Background())
 
 	// submit items asynchronously
@@ -254,7 +251,7 @@ func Example_withCollectorIterator() {
 		return nil
 	})
 
-	p, _ := New[int](2, Options[int]().WithWorker(worker))
+	p, _ := New[int](2, worker)
 	p.Go(context.Background())
 
 	// submit items asynchronously
@@ -315,7 +312,7 @@ func Example_fibCalculator() {
 	})
 
 	// create pool with 3 workers
-	p, _ := New[int](3, Options[int]().WithWorker(worker))
+	p, _ := New[int](3, worker)
 	p.Go(context.Background())
 
 	// submit numbers to calculate asynchronously
@@ -364,7 +361,7 @@ func Example_chainedCalculation() {
 		return nil
 	})
 
-	// stage 2: for each fibonacci number, calculate its factors
+	// stage 2: calculate factors for each fibonacci number
 	type FactorsResult struct {
 		n       uint64
 		factors []uint64
@@ -394,41 +391,43 @@ func Example_chainedCalculation() {
 	})
 
 	// create and start both pools
-	pool1, _ := New[int](3, Options[int]().WithWorker(fibWorker))
+	pool1, _ := New[int](3, fibWorker)
 	pool1.Go(context.Background())
 
-	pool2, _ := New[FibResult](2, Options[FibResult]().WithWorker(factorsWorker))
+	pool2, _ := NewStateful[FibResult](2, func() Worker[FibResult] {
+		return factorsWorker
+	})
 	pool2.Go(context.Background())
 
-	// stage 1: submit numbers for fibonacci calculation
-	go func() {
-		numbers := []int{5, 7, 10}
-		for _, n := range numbers {
-			pool1.Submit(n)
-		}
-		pool1.Close(context.Background())
-		stage1Collector.Close()
-	}()
+	// submit numbers to calculate
+	numbers := []int{5, 7, 10}
+	for _, n := range numbers {
+		pool1.Submit(n)
+	}
 
-	// stage 2: take fibonacci results and submit for factorization
-	go func() {
-		for fibRes, err := range stage1Collector.Iter() {
-			if err != nil {
-				fmt.Printf("stage 1 error: %v\n", err)
-				continue
-			}
-			pool2.Submit(fibRes)
-		}
-		pool2.Close(context.Background())
-		stage2Collector.Close()
-	}()
+	// close pools and collectors in order
+	pool1.Close(context.Background())
+	stage1Collector.Close()
 
-	// collect and print final results
+	// process stage 1 results in stage 2
+	for fibRes, err := range stage1Collector.Iter() {
+		if err != nil {
+			fmt.Printf("stage 1 error: %v\n", err)
+			continue
+		}
+		pool2.Submit(fibRes)
+	}
+
+	pool2.Close(context.Background())
+	stage2Collector.Close()
+
+	// collect and sort final results to ensure deterministic output order
 	results, _ := stage2Collector.All()
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].n < results[j].n
 	})
 
+	// print results in sorted order
 	for _, res := range results {
 		fmt.Printf("number %d has factors %v\n", res.n, res.factors)
 	}
