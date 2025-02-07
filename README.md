@@ -36,8 +36,9 @@ func main() {
     })
 
     // create a pool with 5 workers
+	opts := pool.Options[string]()
     p, err := pool.New[string](5, worker,
-        pool.Options[string]().WithContinueOnError(), // don't stop on errors
+        opts.WithContinueOnError(), // don't stop on errors
     )
     if err != nil {
         log.Fatal(err)
