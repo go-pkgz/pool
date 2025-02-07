@@ -34,9 +34,9 @@ func main() {
         }
         return nil
     })
-
-    // create a pool with 5 workers
-	opts := pool.Options[string]()
+	
+    // create a pool with 5 workers 
+    opts := pool.Options[string]()
     p, err := pool.New[string](5, worker,
         opts.WithContinueOnError(), // don't stop on errors
     )
