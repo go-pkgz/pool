@@ -15,6 +15,75 @@
 - Optional completion callbacks
 - No external dependencies except for the testing framework
 
+
+## Quick Start
+
+Here's a practical example showing how to process a list of URLs in parallel:
+
+```go
+func main() {
+    // create a worker that fetches URLs
+    worker := pool.WorkerFunc[string](func(ctx context.Context, url string) error {
+        resp, err := http.Get(url)
+        if err != nil {
+            return fmt.Errorf("failed to fetch %s: %w", url, err)
+        }
+        defer resp.Body.Close()
+        
+        if resp.StatusCode != http.StatusOK {
+            return fmt.Errorf("bad status code from %s: %d", url, resp.StatusCode)
+        }
+        return nil
+    })
+
+    // create a pool with 5 workers
+    p, err := pool.New[string](5, pool.Options[string]().
+        WithWorker(worker).
+        WithContinueOnError(), // don't stop on errors
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // start the pool
+    if err := p.Go(context.Background()); err != nil {
+        log.Fatal(err)
+    }
+
+    // submit URLs for processing
+    urls := []string{
+        "https://example.com",
+        "https://example.org",
+        "https://example.net",
+    }
+    
+    go func() {
+        // submit URLs and signal when done
+        defer p.Close(context.Background())
+        for _, url := range urls {
+            p.Submit(url)
+        }
+    }()
+
+    // wait for all URLs to be processed
+    if err := p.Wait(context.Background()); err != nil {
+        log.Printf("some URLs failed: %v", err)
+    }
+
+    // print metrics
+    stats := p.Metrics().Stats()
+    fmt.Printf("Processed: %d, Errors: %d, Time taken: %v\n",
+        stats.Processed, stats.Errors, stats.TotalTime)
+}
+```
+
+This example demonstrates:
+- Creating a worker function that processes URLs
+- Setting up a pool with multiple workers
+- Submitting work in a separate goroutine
+- Using Close/Wait for proper shutdown
+- Error handling and metrics collection
+
 ## Core Concepts
 
 ### Worker Types
@@ -132,74 +201,6 @@ When to use custom distribution:
 - Optimize cache usage by worker
 - Ensure exclusive access to resources
 - Process user/session data consistently
-
-## Quick Start
-
-Here's a practical example showing how to process a list of URLs in parallel:
-
-```go
-func main() {
-    // create a worker that fetches URLs
-    worker := pool.WorkerFunc[string](func(ctx context.Context, url string) error {
-        resp, err := http.Get(url)
-        if err != nil {
-            return fmt.Errorf("failed to fetch %s: %w", url, err)
-        }
-        defer resp.Body.Close()
-        
-        if resp.StatusCode != http.StatusOK {
-            return fmt.Errorf("bad status code from %s: %d", url, resp.StatusCode)
-        }
-        return nil
-    })
-
-    // create a pool with 5 workers
-    p, err := pool.New[string](5, pool.Options[string]().
-        WithWorker(worker).
-        WithContinueOnError(), // don't stop on errors
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    // start the pool
-    if err := p.Go(context.Background()); err != nil {
-        log.Fatal(err)
-    }
-
-    // submit URLs for processing
-    urls := []string{
-        "https://example.com",
-        "https://example.org",
-        "https://example.net",
-    }
-    
-    go func() {
-        // submit URLs and signal when done
-        defer p.Close(context.Background())
-        for _, url := range urls {
-            p.Submit(url)
-        }
-    }()
-
-    // wait for all URLs to be processed
-    if err := p.Wait(context.Background()); err != nil {
-        log.Printf("some URLs failed: %v", err)
-    }
-
-    // print metrics
-    stats := p.Metrics().Stats()
-    fmt.Printf("Processed: %d, Errors: %d, Time taken: %v\n",
-        stats.Processed, stats.Errors, stats.TotalTime)
-}
-```
-
-This example demonstrates:
-- Creating a worker function that processes URLs
-- Setting up a pool with multiple workers
-- Submitting work in a separate goroutine
-- Using Close/Wait for proper shutdown
-- Error handling and metrics collection
 
 ## Architecture and Components
 
