@@ -180,21 +180,22 @@ func Example_withError() {
 }
 
 func Example_withContext() {
-	// create timeout context that will cancel after 10ms
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	started := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	worker := WorkerFunc[int](func(ctx context.Context, v int) error {
-		time.Sleep(50 * time.Millisecond) // simulate slow work
-		return nil
+		close(started) // signal that worker started
+		<-ctx.Done()   // wait for cancellation
+		return ctx.Err()
 	})
 
 	p, _ := New[int](1, Options[int]().WithWorker(worker))
 	p.Go(ctx)
+	p.Submit(1)
 
-	p.Submit(1)                       // this will be interrupted by context timeout
-	time.Sleep(20 * time.Millisecond) // ensure context has time to timeout
-
+	<-started // wait for worker to start
+	cancel()  // cancel context
 	err := p.Close(context.Background())
 	fmt.Printf("got error: %v\n", err != nil)
 
@@ -213,9 +214,6 @@ func Example_withCollector() {
 
 	// create worker that processes numbers and sends results to collector
 	worker := WorkerFunc[int](func(_ context.Context, v int) error {
-		// simulate processing delay for consistent output
-		time.Sleep(time.Duration(v) * time.Millisecond)
-
 		result := Item{
 			val:   v * 2,  // double the value
 			label: "proc", // add label
@@ -237,8 +235,13 @@ func Example_withCollector() {
 		collector.Close() // close collector after pool is done
 	}()
 
-	// collect and print results
+	// collect results and sort them for deterministic output
 	results, _ := collector.All()
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].val < results[j].val
+	})
+
+	// print sorted results
 	for _, res := range results {
 		fmt.Printf("got result: %d (%s)\n", res.val, res.label)
 	}
@@ -253,7 +256,6 @@ func Example_withCollectorIterator() {
 	collector := NewCollector[string](context.Background(), 5)
 
 	worker := WorkerFunc[int](func(_ context.Context, v int) error {
-		time.Sleep(time.Duration(v) * time.Millisecond) // ensure predictable order
 		collector.Submit(fmt.Sprintf("value %d", v))
 		return nil
 	})
@@ -270,12 +272,19 @@ func Example_withCollectorIterator() {
 		collector.Close()
 	}()
 
-	// use iterator to process results as they arrive
+	// collect all values first
+	var values []string
 	for val, err := range collector.Iter() {
 		if err != nil {
 			fmt.Printf("error: %v\n", err)
 			continue
 		}
+		values = append(values, val)
+	}
+
+	// sort and print values for deterministic output
+	sort.Strings(values)
+	for _, val := range values {
 		fmt.Printf("processed: %s\n", val)
 	}
 
