@@ -36,10 +36,9 @@ func main() {
     })
 
     // create a pool with 5 workers
-	opts := pool.Options[string]()
-    p, err := pool.New[string](5, 
-		opts.WithWorker(worker),    // set the worker
-        opts.WithContinueOnError(), // don't stop on errors
+    p, err := pool.New[string](5, pool.Options[string]().
+        WithWorker(worker).
+        WithContinueOnError(), // don't stop on errors
     )
     if err != nil {
         log.Fatal(err)
@@ -56,9 +55,10 @@ func main() {
         "https://example.org",
         "https://example.net",
     }
+    
     go func() {
         // submit URLs and signal when done
-        defer p.Close(context.Background()) // signal no more data, all URLs are submitted
+        defer p.Close(context.Background())
         for _, url := range urls {
             p.Submit(url)
         }
@@ -169,11 +169,70 @@ Handles result collection from workers:
 
 ### Metrics
 
-Provides insight into pool performance:
-- Processing counts
-- Error counts
-- Timing measurements
-- Per-worker statistics
+The pool automatically collects comprehensive metrics for monitoring and debugging. Metrics are collected per worker and can be aggregated across all workers.
+
+Available metrics:
+
+1. Counters:
+   ```go
+   const (
+       CountProcessed = "processed" // number of processed items
+       CountErrors    = "errors"    // number of errors
+       CountDropped   = "dropped"   // number of dropped items
+   )
+   ```
+
+2. Durations:
+   ```go
+   const (
+       DurationWait = "wait"  // time spent waiting for work
+       DurationProc = "proc"  // time spent processing work
+       DurationInit = "init"  // time spent initializing
+       DurationWrap = "wrap"  // time spent wrapping up/finalizing
+       DurationFull = "total" // total time since start
+   )
+   ```
+
+Access metrics in two ways:
+
+1. As a structured Stats object:
+   ```go
+   stats := p.Metrics().Stats()
+   fmt.Printf("Processed: %d\n", stats.Processed)
+   fmt.Printf("Errors: %d\n", stats.Errors)
+   fmt.Printf("Processing time: %v\n", stats.ProcessingTime)
+   fmt.Printf("Wait time: %v\n", stats.WaitTime)
+   fmt.Printf("Total time: %v\n", stats.TotalTime)
+   ```
+
+2. Raw access to individual metrics:
+   ```go
+   m := p.Metrics()
+   processed := m.Get(metrics.CountProcessed)
+   procTime := m.GetDuration(metrics.DurationProc)
+   ```
+
+Timing helpers for custom measurements:
+```go
+worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
+    m := metrics.Get(ctx)
+    
+    // track processing time
+    procEnd := m.StartTimer(metrics.DurationProc)
+    defer procEnd()
+    
+    // track custom timing
+    customEnd := m.StartTimer("my-operation")
+    defer customEnd()
+    
+    // increment custom counter
+    m.Inc("my-counter")
+    
+    return nil
+})
+```
+
+Metrics are thread-safe and can be accessed at any time. The pool automatically aggregates metrics from all workers when you call `p.Metrics()`.
 
 ### Flow
 
@@ -350,17 +409,52 @@ p, _ := pool.New[string](2,
 ### Metrics and Monitoring
 
 ```go
+// create worker with metrics tracking
+worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
+    m := metrics.Get(ctx)
+    
+    // track operation timing
+    operationEnd := m.StartTimer("operation")
+    defer operationEnd()
+    
+    // simulate work
+    time.Sleep(time.Millisecond * 100)
+    
+    // track custom metrics
+    if strings.HasPrefix(v, "important") {
+        m.Inc("important-tasks")
+    }
+    
+    // track success/failure
+    if err := process(v); err != nil {
+        m.Inc(metrics.CountErrors)
+        return err
+    }
+    m.Inc(metrics.CountProcessed)
+    return nil
+})
+
+// create and run pool
+p, _ := pool.New[string](2, pool.Options[string]().WithWorker(worker))
+p.Go(context.Background())
+
 // process some work
 p.Submit("task1")
-p.Submit("task2")
+p.Submit("important-task2")
 p.Close(context.Background())
 
-// get metrics
+// get structured metrics
 stats := p.Metrics().Stats()
 fmt.Printf("Processed: %d\n", stats.Processed)
 fmt.Printf("Errors: %d\n", stats.Errors)
 fmt.Printf("Processing time: %v\n", stats.ProcessingTime)
+fmt.Printf("Wait time: %v\n", stats.WaitTime)
 fmt.Printf("Total time: %v\n", stats.TotalTime)
+
+// get raw metrics
+m := p.Metrics()
+fmt.Printf("Important tasks: %d\n", m.Get("important-tasks"))
+fmt.Printf("Operation time: %v\n", m.GetDuration("operation"))
 ```
 
 ## Complete Example: Processing Pipeline
