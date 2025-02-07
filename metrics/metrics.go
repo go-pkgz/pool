@@ -206,6 +206,14 @@ func (m *Value) Stats() Stats {
 	m.userLock.RLock()
 	defer m.userLock.RUnlock()
 
+	// calculate total time as max of time.Since(startTime) and sum of all durations
+	totalTime := time.Since(m.startTime)
+	durationsSum := m.durations[DurationProc] + m.durations[DurationWait] +
+	  m.durations[DurationInit] + m.durations[DurationWrap]
+	if durationsSum > totalTime {
+		totalTime = durationsSum
+	}
+
 	return Stats{
 		Processed:      m.userData[CountProcessed],
 		Errors:         m.userData[CountErrors],
@@ -214,6 +222,6 @@ func (m *Value) Stats() Stats {
 		WaitTime:       m.durations[DurationWait],
 		InitTime:       m.durations[DurationInit],
 		WrapTime:       m.durations[DurationWrap],
-		TotalTime:      time.Since(m.startTime),
+		TotalTime:      totalTime,
 	}
 }

@@ -99,3 +99,23 @@ func TestMetrics_Aggregate(t *testing.T) {
 	assert.Equal(t, 3*time.Second, combined.GetDuration(DurationWait))
 	assert.Equal(t, time.Second, combined.GetDuration(DurationProc))
 }
+
+func TestMetricsStats_Timing(t *testing.T) {
+	m := New()
+
+	// simulate some processing that takes time
+	procEnd := m.StartTimer(DurationProc)
+	time.Sleep(50 * time.Millisecond)
+	procEnd()
+
+	// get stats right after processing
+	stats := m.Stats()
+
+	t.Logf("Total time: %v", stats.TotalTime)
+	t.Logf("Processing time: %v", stats.ProcessingTime)
+
+	// total time should be greater than or equal to processing time
+	assert.GreaterOrEqual(t, stats.TotalTime, stats.ProcessingTime,
+		"total time (%v) should be >= processing time (%v)",
+		stats.TotalTime, stats.ProcessingTime)
+}
