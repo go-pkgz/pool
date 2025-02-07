@@ -484,3 +484,124 @@ func TestPool_MetricsAsStruct(t *testing.T) {
 	// verify actual vs reported processing
 	assert.Equal(t, int(processed), stats.Processed, "processed count mismatch")
 }
+
+func TestPool_FinalizeWorker(t *testing.T) {
+	t.Run("batch processing with errors", func(t *testing.T) {
+		var processed []string
+		worker := WorkerFunc[string](func(_ context.Context, v string) error {
+			if v == "error" {
+				return fmt.Errorf("test error")
+			}
+			processed = append(processed, v)
+			return nil
+		})
+
+		p, err := New[string](1, worker)
+		require.NoError(t, err)
+		require.NoError(t, p.Go(context.Background()))
+
+		// fill batch buffer with items including error
+		p.buf[0] = []string{"ok1", "error", "ok2"}
+
+		// should process until error
+		err = p.finalizeWorker(context.Background(), 0, worker)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "test error")
+		assert.Equal(t, []string{"ok1"}, processed)
+	})
+
+	t.Run("batch processing continues on error", func(t *testing.T) {
+		var processed []string
+		worker := WorkerFunc[string](func(_ context.Context, v string) error {
+			if v == "error" {
+				return fmt.Errorf("test error")
+			}
+			processed = append(processed, v)
+			return nil
+		})
+
+		p, err := New[string](1, worker,
+			Options[string]().WithContinueOnError(),
+		)
+		require.NoError(t, err)
+		require.NoError(t, p.Go(context.Background()))
+
+		// fill batch buffer with items including error
+		p.buf[0] = []string{"ok1", "error", "ok2"}
+
+		// should process all items
+		err = p.finalizeWorker(context.Background(), 0, worker)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"ok1", "ok2"}, processed)
+	})
+
+	t.Run("completeFn error", func(t *testing.T) {
+		worker := WorkerFunc[string](func(_ context.Context, v string) error {
+			return nil
+		})
+
+		completeFnError := fmt.Errorf("complete error")
+		p, err := New[string](1, worker,
+			Options[string]().WithCompleteFn(func(context.Context, int, Worker[string]) error {
+				return completeFnError
+			}),
+		)
+		require.NoError(t, err)
+		require.NoError(t, p.Go(context.Background()))
+
+		err = p.finalizeWorker(context.Background(), 0, worker)
+		require.Error(t, err)
+		require.ErrorIs(t, err, completeFnError)
+	})
+
+	t.Run("batch error prevents completeFn", func(t *testing.T) {
+		var completeFnCalled bool
+		worker := WorkerFunc[string](func(_ context.Context, v string) error {
+			return fmt.Errorf("batch error")
+		})
+
+		p, err := New[string](1, worker,
+			Options[string]().WithCompleteFn(func(context.Context, int, Worker[string]) error {
+				completeFnCalled = true
+				return fmt.Errorf("complete error")
+			}),
+		)
+		require.NoError(t, err)
+		require.NoError(t, p.Go(context.Background()))
+
+		// fill batch buffer with an item
+		p.buf[0] = []string{"task"}
+
+		err = p.finalizeWorker(context.Background(), 0, worker)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "batch error")
+		assert.False(t, completeFnCalled, "completeFn should not be called after batch error")
+	})
+
+	t.Run("context cancellation", func(t *testing.T) {
+		processed := make(chan string, 1)
+		worker := WorkerFunc[string](func(ctx context.Context, v string) error {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case processed <- v:
+				return nil
+			}
+		})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		p, err := New[string](1, worker)
+		require.NoError(t, err)
+		require.NoError(t, p.Go(ctx))
+
+		// fill batch buffer
+		p.buf[0] = []string{"task1", "task2"}
+
+		// cancel context before finalization
+		cancel()
+
+		err = p.finalizeWorker(ctx, 0, worker)
+		require.Error(t, err)
+		require.ErrorIs(t, err, context.Canceled)
+	})
+}
