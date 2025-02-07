@@ -354,3 +354,149 @@ func TestPool_Distribution(t *testing.T) {
 		t.Logf("workers distribution: %v, difference: %.2f%%", counts, diff*100)
 	})
 }
+
+func TestPool_Metrics(t *testing.T) {
+	t.Run("basic metrics", func(t *testing.T) {
+		worker := WorkerFunc[int](func(ctx context.Context, _ int) error {
+			m := metrics.Get(ctx)
+			procEnd := m.StartTimer(metrics.DurationProc)
+			time.Sleep(time.Millisecond)
+			procEnd()
+			m.Inc(metrics.CountProcessed)
+			return nil
+		})
+
+		p, err := New[int](2, Options[int]().WithWorker(worker))
+		require.NoError(t, err)
+		require.NoError(t, p.Go(context.Background()))
+
+		for i := 0; i < 10; i++ {
+			p.Submit(i)
+		}
+		require.NoError(t, p.Close(context.Background()))
+
+		m := p.Metrics()
+		assert.Equal(t, 10, m.Get(metrics.CountProcessed))
+		assert.Greater(t, m.GetDuration(metrics.DurationProc), time.Duration(0))
+		assert.Equal(t, 0, m.Get(metrics.CountErrors))
+	})
+
+	t.Run("metrics with errors", func(t *testing.T) {
+		worker := WorkerFunc[int](func(ctx context.Context, v int) error {
+			m := metrics.Get(ctx)
+			m.Inc(metrics.CountProcessed)
+			if v%2 == 0 {
+				return errors.New("even number")
+			}
+			return nil
+		})
+
+		p, err := New[int](2,
+			Options[int]().WithWorker(worker),
+			Options[int]().WithContinueOnError(),
+		)
+		require.NoError(t, err)
+		require.NoError(t, p.Go(context.Background()))
+
+		for i := 0; i < 10; i++ {
+			p.Submit(i)
+		}
+		require.Error(t, p.Close(context.Background()))
+
+		m := p.Metrics()
+		assert.Equal(t, 10, m.Get(metrics.CountProcessed))
+		assert.Equal(t, 5, m.Get(metrics.CountErrors))
+	})
+
+	t.Run("metrics with batching", func(t *testing.T) {
+		worker := WorkerFunc[int](func(ctx context.Context, _ int) error {
+			m := metrics.Get(ctx)
+			m.Inc(metrics.CountProcessed)
+			return nil
+		})
+
+		p, err := New[int](2,
+			Options[int]().WithWorker(worker),
+			Options[int]().WithBatchSize(3),
+		)
+		require.NoError(t, err)
+		require.NoError(t, p.Go(context.Background()))
+
+		for i := 0; i < 10; i++ {
+			p.Submit(i)
+		}
+		require.NoError(t, p.Close(context.Background()))
+
+		m := p.Metrics()
+		assert.Equal(t, 10, m.Get(metrics.CountProcessed))
+	})
+
+	t.Run("metrics timing", func(t *testing.T) {
+		const processingTime = 10 * time.Millisecond
+		worker := WorkerFunc[int](func(ctx context.Context, _ int) error {
+			m := metrics.Get(ctx)
+			procEnd := m.StartTimer(metrics.DurationProc)
+			time.Sleep(processingTime)
+			procEnd()
+			m.Inc(metrics.CountProcessed)
+			return nil
+		})
+
+		p, err := New[int](2, Options[int]().WithWorker(worker))
+		require.NoError(t, err)
+		require.NoError(t, p.Go(context.Background()))
+
+		p.Submit(1)
+		p.Submit(2)
+		require.NoError(t, p.Close(context.Background()))
+
+		m := p.Metrics()
+		assert.Equal(t, 2, m.Get(metrics.CountProcessed))
+		assert.GreaterOrEqual(t, m.GetDuration(metrics.DurationProc), time.Millisecond*20)
+		assert.Less(t, m.GetDuration(metrics.DurationProc), time.Millisecond*30)
+		assert.Greater(t, m.GetDuration(metrics.DurationInit), time.Duration(0))
+		assert.Greater(t, m.GetDuration(metrics.DurationWrap), time.Duration(0))
+	})
+}
+
+func TestPool_MetricsAsStruct(t *testing.T) {
+	var processed int32
+	worker := WorkerFunc[int](func(ctx context.Context, _ int) error {
+		atomic.AddInt32(&processed, 1) // track actual processing count
+		m := metrics.Get(ctx)
+		procEnd := m.StartTimer(metrics.DurationProc)
+		time.Sleep(time.Millisecond)
+		procEnd()
+		m.Inc(metrics.CountProcessed)
+		return nil
+	})
+
+	p, err := New[int](2, Options[int]().WithWorker(worker))
+	require.NoError(t, err)
+	require.NoError(t, p.Go(context.Background()))
+
+	// submit 3 items
+	p.Submit(1)
+	p.Submit(2)
+	p.Submit(3)
+	require.NoError(t, p.Close(context.Background()))
+
+	stats := p.Metrics().Stats()
+	t.Logf("Stats: %+v", stats)
+	t.Logf("Actual processed: %d", atomic.LoadInt32(&processed))
+
+	// verify counts
+	assert.Equal(t, 3, stats.Processed)
+	assert.Equal(t, 0, stats.Errors)
+	assert.Equal(t, 0, stats.Dropped)
+
+	// verify timings
+	assert.Greater(t, stats.ProcessingTime, time.Duration(0))
+	assert.Greater(t, stats.WaitTime, time.Duration(0))
+	assert.Greater(t, stats.InitTime, time.Duration(0))
+	assert.Greater(t, stats.WrapTime, time.Duration(0))
+	assert.Greater(t, stats.TotalTime, time.Duration(0))
+
+	// verify actual vs reported processing
+	assert.Equal(t, int(processed), stats.Processed, "processed count mismatch")
+}

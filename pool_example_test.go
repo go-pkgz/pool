@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"sync"
-	"time"
 
 	"github.com/go-pkgz/pool/metrics"
 )
@@ -87,14 +86,11 @@ func Example_withBatching() {
 }
 
 func Example_withRouting() {
-	// collect output for deterministic order
-	var out []string
-	var mu sync.Mutex
+	// collect output with sync.Map for thread safety
+	var out sync.Map
 
 	worker := WorkerFunc[int](func(ctx context.Context, v int) error {
-		mu.Lock()
-		out = append(out, fmt.Sprintf("worker %d got %d", metrics.WorkerID(ctx), v))
-		mu.Unlock()
+		out.Store(v, fmt.Sprintf("worker %d got %d", metrics.WorkerID(ctx), v))
 		return nil
 	})
 
@@ -111,20 +107,18 @@ func Example_withRouting() {
 	)
 	p.Go(context.Background())
 
-	// Submit in order
-	p.Submit(1)
-	time.Sleep(time.Millisecond) // ensure ordering for example output
-	p.Submit(2)
-	time.Sleep(time.Millisecond)
-	p.Submit(3)
-	time.Sleep(time.Millisecond)
-	p.Submit(4)
+	// Submit all numbers
+	for i := 1; i <= 4; i++ {
+		p.Submit(i)
+	}
 
 	p.Close(context.Background())
 
-	// print collected output in original order (no sort)
-	for _, s := range out {
-		fmt.Println(s)
+	// print in order to ensure deterministic output
+	for i := 1; i <= 4; i++ {
+		if v, ok := out.Load(i); ok {
+			fmt.Println(v)
+		}
 	}
 
 	// Output:
