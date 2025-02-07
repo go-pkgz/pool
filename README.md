@@ -151,13 +151,35 @@ You can implement workers in two ways:
 ### Options
 
 Configures the worker pool through a fluent API:
-- `WithWorker` - sets a stateless worker
-- `WithWorkerMaker` - provides worker factory for stateful workers
-- `WithBatchSize` - enables batch processing
-- `WithChunkFn` - controls work distribution
-- `WithContext` - sets cancellation context
-- `WithContinueOnError` - configures error handling
-- `WithCompleteFn` - sets completion callback
+
+```go
+opts := pool.Options[string]()
+p, err := pool.New[string](2,
+    opts.WithWorker(worker),            // set worker implementation
+    opts.WithWorkerMaker(workerMaker),  // or use factory for stateful workers
+    opts.WithBatchSize(10),             // process items in batches
+    opts.WithWorkerChanSize(5),         // set worker channel buffer size
+    opts.WithChunkFn(chunkFn),          // control work distribution
+    opts.WithContext(ctx),              // set custom context
+    opts.WithContinueOnError(),         // don't stop on errors
+    opts.WithCompleteFn(completeFn),    // called when worker finishes
+)
+```
+
+Key Options:
+
+- `WithWorker(w Worker[T])` - sets a stateless worker implementation that is shared between goroutines
+- `WithWorkerMaker(fn func() Worker[T])` - provides a factory to create new worker instance for each goroutine, useful for stateful workers
+- `WithBatchSize(size int)` - enables batch processing, accumulating items before sending to workers. This can improve performance by reducing channel communication overhead
+- `WithWorkerChanSize(size int)` - sets buffer size for worker channels. Default is 1. Larger sizes can help smooth out processing when workload is uneven
+- `WithChunkFn(fn func(T) string)` - controls work distribution by mapping items to workers based on the returned string hash
+- `WithContext(ctx context.Context)` - sets custom context for cancellation and timeouts. If not set, background context is used
+- `WithContinueOnError()` - configures pool to continue processing when errors occur. By default, pool stops on first error
+- `WithCompleteFn(fn func(ctx, id, worker))` - sets function called when worker finishes, useful for cleanup and resource management
+
+Options are mutually exclusive:
+- Cannot use both `WithWorker` and `WithWorkerMaker`
+- `WithContext` overrides any previous context
 
 ### Collector
 
