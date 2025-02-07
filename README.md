@@ -15,6 +15,74 @@
 - Optional completion callbacks
 - No external dependencies except for the testing framework
 
+## Quick Start
+
+Here's a practical example showing how to process a list of URLs in parallel:
+
+```go
+func main() {
+    // create a worker that fetches URLs
+    worker := pool.WorkerFunc[string](func(ctx context.Context, url string) error {
+        resp, err := http.Get(url)
+        if err != nil {
+            return fmt.Errorf("failed to fetch %s: %w", url, err)
+        }
+        defer resp.Body.Close()
+        
+        if resp.StatusCode != http.StatusOK {
+            return fmt.Errorf("bad status code from %s: %d", url, resp.StatusCode)
+        }
+        return nil
+    })
+
+    // create a pool with 5 workers
+	opts := pool.Options[string]()
+    p, err := pool.New[string](5, 
+		opts.WithWorker(worker),    // set the worker
+        opts.WithContinueOnError(), // don't stop on errors
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // start the pool
+    if err := p.Go(context.Background()); err != nil {
+        log.Fatal(err)
+    }
+
+    // submit URLs for processing
+    urls := []string{
+        "https://example.com",
+        "https://example.org",
+        "https://example.net",
+    }
+    go func() {
+        // submit URLs and signal when done
+        defer p.Close(context.Background()) // signal no more data, all URLs are submitted
+        for _, url := range urls {
+            p.Submit(url)
+        }
+    }()
+
+    // wait for all URLs to be processed
+    if err := p.Wait(context.Background()); err != nil {
+        log.Printf("some URLs failed: %v", err)
+    }
+
+    // print metrics
+    stats := p.Metrics().Stats()
+    fmt.Printf("Processed: %d, Errors: %d, Time taken: %v\n",
+        stats.Processed, stats.Errors, stats.TotalTime)
+}
+```
+
+This example demonstrates:
+- Creating a worker function that processes URLs
+- Setting up a pool with multiple workers
+- Submitting work in a separate goroutine
+- Using Close/Wait for proper shutdown
+- Error handling and metrics collection
+
 ## Architecture and Components
 
 The package consists of several key components that work together:
@@ -60,7 +128,6 @@ func (f WorkerFunc[T]) Do(ctx context.Context, v T) error {
 ```
 
 You can implement workers in two ways:
-
 1. Using `WorkerFunc` for stateless functions:
    ```go
    worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
@@ -126,11 +193,11 @@ Provides insight into pool performance:
    ```
 
 4. Processing:
-    - Tasks are distributed to workers
-    - Optional batching occurs
-    - Workers process tasks
-    - Metrics are collected
-    - Results are optionally collected
+   - Tasks are distributed to workers
+   - Optional batching occurs
+   - Workers process tasks
+   - Metrics are collected
+   - Results are optionally collected
 
 5. Completion:
    The package provides two methods for completion:
