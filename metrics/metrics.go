@@ -1,3 +1,4 @@
+// Package metrics provides a way to collect metrics in a thread-safe way.
 package metrics
 
 import (

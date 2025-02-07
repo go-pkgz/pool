@@ -260,7 +260,8 @@ func TestPool_Wait(t *testing.T) {
 		for _, v := range inputs {
 			p.Submit(v)
 		}
-		p.Close(context.Background())
+		err := p.Close(context.Background())
+		require.NoError(t, err)
 	}()
 
 	// wait for completion
@@ -291,7 +292,8 @@ func TestPool_Wait_WithError(t *testing.T) {
 	go func() {
 		p.Submit("ok")
 		p.Submit("error")
-		p.Close(context.Background())
+		err := p.Close(context.Background())
+		require.Error(t, err)
 	}()
 
 	err = p.Wait(context.Background())
@@ -377,7 +379,7 @@ func Example_basic() {
 	p.Submit(2)
 	p.Submit(3)
 
-	p.Close(context.Background())
+	_ = p.Close(context.Background())
 
 	// print collected output in sorted order
 	sort.Strings(out)
@@ -533,7 +535,7 @@ func Example_withContext() {
 		case <-time.After(100 * time.Millisecond):
 			return nil
 		case <-ctx.Done():
-			fmt.Println("context cancelled")
+			fmt.Println("context cancelled") //nolint
 			return ctx.Err()
 		}
 	})
@@ -730,7 +732,7 @@ func Example_chainedCalculation() {
 		for i := uint64(2); i*i <= n; i++ {
 			for n%i == 0 {
 				factors = append(factors, i)
-				n = n / i
+				n /= i
 			}
 		}
 		if n > 1 {

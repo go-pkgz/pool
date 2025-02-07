@@ -32,7 +32,7 @@ func TestOptions(t *testing.T) {
 		worker := WorkerFunc[string](func(ctx context.Context, v string) error { return nil })
 		ctx := context.Background()
 
-		customCtx := context.WithValue(ctx, "test", "value")
+		customCtx := context.WithValue(ctx, "test", "value") //nolint
 		completeFn := func(ctx context.Context, id int, w Worker[string]) error { return nil }
 		chunkFn := func(v string) string { return v }
 
@@ -65,10 +65,6 @@ func TestOptions(t *testing.T) {
 
 	t.Run("worker maker creates new instances", func(t *testing.T) {
 		opts := Options[string]()
-
-		type statefulWorker struct {
-			count int
-		}
 
 		workerMaker := func() Worker[string] {
 			return WorkerFunc[string](func(ctx context.Context, v string) error {

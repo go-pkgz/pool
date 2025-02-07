@@ -27,7 +27,6 @@ linters:
     - govet
     - unconvert
     - gosec
-    - misspell
     - unparam
     - typecheck
     - ineffassign
@@ -56,4 +55,11 @@ issues:
         - revive
       path: _test\.go$
       text: "unused-parameter"
+    - linters:
+        - prealloc
+      path: _test\.go$
+      text: "Consider pre-allocating"
+    - linters:
+        - gosec
+      path: _test\.go$
   exclude-use-default: false

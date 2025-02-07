@@ -11,6 +11,7 @@ type Collector[V any] struct {
 	ctx context.Context
 }
 
+// NewCollector creates a new collector with a given context and buffer size for the channel
 func NewCollector[V any](ctx context.Context, size int) *Collector[V] {
 	return &Collector[V]{
 		ch:  make(chan V, size),
@@ -18,10 +19,12 @@ func NewCollector[V any](ctx context.Context, size int) *Collector[V] {
 	}
 }
 
+// Submit sends a value to the collector
 func (c *Collector[V]) Submit(v V) {
 	c.ch <- v
 }
 
+// Close closes the collector
 func (c *Collector[V]) Close() {
 	close(c.ch)
 }

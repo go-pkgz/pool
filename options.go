@@ -9,7 +9,7 @@ type Option[T any] func(*WorkerGroup[T])
 type options[T any] struct{}
 
 // Options returns typed options builder
-func Options[T any]() options[T] {
+func Options[T any]() options[T] { //nolint:revive // no need for exporting this type
 	return options[T]{}
 }
 
