@@ -76,13 +76,7 @@ func main() {
 }
 ```
 
-This example demonstrates:
-- Creating a worker function that processes URLs
-- Setting up a pool with multiple workers
-- Submitting work in a separate goroutine
-- Using Close/Wait for proper shutdown
-- Error handling and metrics collection
-
+This example demonstrates how creating a worker function that processes URLs works, how to set up a pool with multiple workers, submit work in a separate goroutine, wait for completion, and collect metrics.
 
 ## Motivation
 
