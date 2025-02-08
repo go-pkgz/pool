@@ -134,9 +134,8 @@ The pool supports two types of workers:
    p, _ := pool.New[string](5, worker)
    ```
    - One worker instance serves all goroutines
-   - Good for stateless operations like HTTP requests, file operations
+   - Good for stateless operations like HTTP requests, records parsing and transformation, etc.
    - More memory efficient
-   - No need to synchronize as a worker is stateless
 
 2. Per-Worker Instances:
    ```go
@@ -162,7 +161,7 @@ The pool supports two types of workers:
    p, _ := pool.NewStateful[string](5, maker)
    ```
    - Each goroutine gets its own worker instance
-   - Good for maintaining state or resources (DB connections, caches)
+   - Good for maintaining state or resources (DB connections, caches) inside the worker
    - No need for mutex as each instance is used by single goroutine
    - More memory usage but better isolation
 
@@ -173,9 +172,7 @@ Batching reduces channel communication overhead by processing multiple items at 
 ```go
 // process items in batches of 10
 opts := pool.Options[string]()
-p, _ := pool.New[string](2, worker,
-    opts.WithBatchSize(10),
-)
+p, _ := pool.New[string](2, worker, opts.WithBatchSize(10))
 
 // worker receives items one by one
 worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
@@ -185,15 +182,13 @@ worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
 ```
 
 How batching works:
-1. Pool accumulates submitted items until batch size is reached
+1. Pool accumulates submitted items internally, until batch size is reached
 2. Full batch is sent to worker as a single channel operation
 3. Worker processes each item in the batch sequentially
-4. Last batch may be smaller if items don't divide evenly
+4. The last batch may be smaller if items don't divide evenly
 
 When to use batching:
 - High-volume processing where channel operations are a bottleneck
-- Database operations that can be batched (bulk inserts)
-- Network operations that can be combined
 - When processing overhead per item is low compared to channel communication
 
 ### Work Distribution
@@ -230,7 +225,7 @@ When to use custom distribution:
 - Maintain ordering for related items
 - Optimize cache usage by worker
 - Ensure exclusive access to resources
-- Process user/session data consistently
+- Process data consistently
 
 ## Install and update
 
