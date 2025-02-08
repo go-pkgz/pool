@@ -398,6 +398,13 @@ Available options:
 - `WithContinueOnError()` - continues processing on errors
 - `WithCompleteFn(fn func(ctx, id, worker))` - called on worker completion
 
+### Alternative pool implementations
+
+- [pond](https://github.com/alitto/pond) - pond is a minimalistic and high-performance Go library designed to elegantly manage concurrent tasks.
+- [goworker](https://github.com/benmanns/goworker) - goworker is a Resque-compatible, Go-based background worker. It allows you to push jobs into a queue using an expressive language like Ruby while harnessing the efficiency and concurrency of Go to minimize job latency and cost.
+- [gowp](https://github.com/xxjwxc/gowp) - golang worker pool
+- for more see [awesome-go goroutines](https://awesome-go.com/goroutines/) list
+
 ## Contributing
 
 Contributions to `pool` are welcome! Please submit a pull request or open an issue for any bugs or feature requests.
