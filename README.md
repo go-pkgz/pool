@@ -136,7 +136,7 @@ The pool supports two types of workers:
    - One worker instance serves all goroutines
    - Good for stateless operations like HTTP requests, file operations
    - More memory efficient
-   - No need to synchronize as worker is stateless
+   - No need to synchronize as a worker is stateless
 
 2. Per-Worker Instances:
    ```go
@@ -186,7 +186,7 @@ worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
 
 How batching works:
 1. Pool accumulates submitted items until batch size is reached
-2. Full batch is sent to worker as single channel operation
+2. Full batch is sent to worker as a single channel operation
 3. Worker processes each item in the batch sequentially
 4. Last batch may be smaller if items don't divide evenly
 
@@ -223,7 +223,7 @@ How distribution works:
 
 2. With chunk function:
    - Function returns string key for each item
-   - Items with same key always go to same worker
+   - Items with the same key always go to the same worker
    - Uses consistent hashing to map keys to workers
 
 When to use custom distribution:
