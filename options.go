@@ -1,9 +1,12 @@
 package pool
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // Option represents a configuration option for WorkerGroup[T]
-type Option[T any] func(*WorkerGroup[T])
+type Option[T any] func(*WorkerGroup[T]) error
 
 // options creates a collection of typed options to avoid repeating type parameter
 type options[T any] struct{}
@@ -17,8 +20,9 @@ func Options[T any]() options[T] { //nolint:revive // no need for exporting this
 // This is used to distribute values to workers predictably.
 // Default: none
 func (options[T]) WithChunkFn(fn func(T) string) Option[T] {
-	return func(p *WorkerGroup[T]) {
+	return func(p *WorkerGroup[T]) error {
 		p.chunkFn = fn
+		return nil
 	}
 }
 
@@ -26,8 +30,9 @@ func (options[T]) WithChunkFn(fn func(T) string) Option[T] {
 // This is useful for cleanup or finalization tasks.
 // Default: none
 func (options[T]) WithCompleteFn(fn CompleteFn[T]) Option[T] {
-	return func(p *WorkerGroup[T]) {
+	return func(p *WorkerGroup[T]) error {
 		p.completeFn = fn
+		return nil
 	}
 }
 
@@ -35,8 +40,12 @@ func (options[T]) WithCompleteFn(fn CompleteFn[T]) Option[T] {
 // to workers in a single batch. This can be useful to reduce contention on worker channels.
 // Default: 1 (no batching)
 func (options[T]) WithBatchSize(size int) Option[T] {
-	return func(p *WorkerGroup[T]) {
+	return func(p *WorkerGroup[T]) error {
 		p.batchSize = size
+		if size < 1 {
+			return fmt.Errorf("batch size must be greater than 0")
+		}
+		return nil
 	}
 }
 
@@ -44,23 +53,29 @@ func (options[T]) WithBatchSize(size int) Option[T] {
 // to receive values from the pool and process them.
 // Default: 1 (unbuffered)
 func (options[T]) WithWorkerChanSize(size int) Option[T] {
-	return func(p *WorkerGroup[T]) {
+	return func(p *WorkerGroup[T]) error {
 		p.workerChanSize = size
+		if size < 1 {
+			return fmt.Errorf("worker channel size must be greater than 0")
+		}
+		return nil
 	}
 }
 
 // WithContext sets the context for the pool. This is used to control the lifecycle of the pool.
 // Default: context.Background()
 func (options[T]) WithContext(ctx context.Context) Option[T] {
-	return func(p *WorkerGroup[T]) {
+	return func(p *WorkerGroup[T]) error {
 		p.ctx = ctx
+		return nil
 	}
 }
 
 // WithContinueOnError sets whether the pool should continue on error.
 // Default: false
 func (options[T]) WithContinueOnError() Option[T] {
-	return func(p *WorkerGroup[T]) {
+	return func(p *WorkerGroup[T]) error {
 		p.continueOnError = true
+		return nil
 	}
 }

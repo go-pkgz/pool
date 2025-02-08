@@ -17,6 +17,64 @@ import (
 	"github.com/go-pkgz/pool/metrics"
 )
 
+func TestPool_Creation(t *testing.T) {
+	t.Run("invalid options should fail pool creation", func(t *testing.T) {
+		worker := WorkerFunc[string](func(ctx context.Context, v string) error { return nil })
+		opts := Options[string]()
+
+		tests := []struct {
+			name    string
+			fn      func() (*WorkerGroup[string], error)
+			wantErr string
+		}{
+			{
+				name: "invalid batch size",
+				fn: func() (*WorkerGroup[string], error) {
+					return New[string](2, worker, opts.WithBatchSize(0))
+				},
+				wantErr: "batch size must be greater than 0",
+			},
+			{
+				name: "invalid channel size",
+				fn: func() (*WorkerGroup[string], error) {
+					return New[string](2, worker, opts.WithWorkerChanSize(0))
+				},
+				wantErr: "worker channel size must be greater than 0",
+			},
+			{
+				name: "nil worker",
+				fn: func() (*WorkerGroup[string], error) {
+					return New[string](2, nil)
+				},
+				wantErr: "worker cannot be nil",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				p, err := tt.fn()
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tt.wantErr)
+				require.Nil(t, p)
+			})
+		}
+	})
+
+	t.Run("pool with invalid options should not activate", func(t *testing.T) {
+		worker := WorkerFunc[string](func(ctx context.Context, v string) error { return nil })
+
+		p, err := New[string](2, worker, Options[string]().WithBatchSize(0))
+		require.Error(t, err)
+		require.Nil(t, p)
+
+		// if we somehow got a pool, it shouldn't activate
+		if p != nil {
+			err = p.Go(context.Background())
+			require.Error(t, err)
+		}
+	})
+}
+
 func TestPool_Basic(t *testing.T) {
 	var processed []string
 	var mu sync.Mutex

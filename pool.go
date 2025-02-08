@@ -83,7 +83,9 @@ func New[T any](size int, worker Worker[T], opts ...Option[T]) (*WorkerGroup[T],
 
 	// apply all options
 	for _, opt := range opts {
-		opt(res)
+		if err := opt(res); err != nil {
+			return nil, fmt.Errorf("failed to apply option: %w", err)
+		}
 	}
 
 	// initialize worker's channels and batch buffers
@@ -121,7 +123,9 @@ func NewStateful[T any](size int, maker func() Worker[T], opts ...Option[T]) (*W
 
 	// apply all options
 	for _, opt := range opts {
-		opt(res)
+		if err := opt(res); err != nil {
+			return nil, fmt.Errorf("failed to apply option: %w", err)
+		}
 	}
 
 	// initialize worker's channels and batch buffers

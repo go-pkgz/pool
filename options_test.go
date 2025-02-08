@@ -43,6 +43,46 @@ func TestOptions(t *testing.T) {
 		require.Equal(t, 5, cap(p.workersCh[1]))
 	})
 
+	t.Run("invalid options return errors", func(t *testing.T) {
+		opts := Options[string]()
+		worker := WorkerFunc[string](func(ctx context.Context, v string) error { return nil })
+
+		tests := []struct {
+			name    string
+			option  Option[string]
+			wantErr string
+		}{
+			{
+				name:    "batch size zero",
+				option:  opts.WithBatchSize(0),
+				wantErr: "batch size must be greater than 0",
+			},
+			{
+				name:    "batch size negative",
+				option:  opts.WithBatchSize(-1),
+				wantErr: "batch size must be greater than 0",
+			},
+			{
+				name:    "worker channel size zero",
+				option:  opts.WithWorkerChanSize(0),
+				wantErr: "worker channel size must be greater than 0",
+			},
+			{
+				name:    "worker channel size negative",
+				option:  opts.WithWorkerChanSize(-1),
+				wantErr: "worker channel size must be greater than 0",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				_, err := New[string](2, worker, tt.option)
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tt.wantErr)
+			})
+		}
+	})
+
 	t.Run("stateful worker creates new instances", func(t *testing.T) {
 		opts := Options[string]()
 		workerMaker := func() Worker[string] {
@@ -72,5 +112,17 @@ func TestOptions(t *testing.T) {
 		require.Nil(t, p.completeFn)
 		require.Nil(t, p.chunkFn)
 		require.NotNil(t, p.ctx)
+	})
+
+	t.Run("multiple option errors are reported", func(t *testing.T) {
+		opts := Options[string]()
+		worker := WorkerFunc[string](func(ctx context.Context, v string) error { return nil })
+
+		_, err := New[string](2, worker,
+			opts.WithBatchSize(0),
+			opts.WithWorkerChanSize(-1),
+		)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "batch size must be greater than 0")
 	})
 }
