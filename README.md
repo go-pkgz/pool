@@ -232,6 +232,12 @@ When to use custom distribution:
 - Ensure exclusive access to resources
 - Process user/session data consistently
 
+## Install and update
+
+```bash
+go get -u github.com/go-pkgz/pool
+```
+
 ## Usage Examples
 
 ### Basic Example
@@ -534,12 +540,6 @@ Available options:
 - `WithContext(ctx context.Context)` - sets custom context for cancellation
 - `WithContinueOnError()` - continues processing on errors
 - `WithCompleteFn(fn func(ctx, id, worker))` - called on worker completion
-
-## Install and update
-
-```bash
-go get -u github.com/go-pkgz/pool
-```
 
 ## Contributing
 
