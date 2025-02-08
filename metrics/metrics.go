@@ -1,4 +1,4 @@
-// Package metrics provides a way to collect metrics in a thread-safe way.
+// Package metrics provides a way to collect metrics in a thread-safe way
 package metrics
 
 import (
@@ -12,48 +12,94 @@ import (
 
 type contextKey string
 
+// TimerType is a type of timer to measure
+type TimerType int
+
 const (
 	metricsContextKey contextKey = "metrics"
 	widContextKey     contextKey = "worker-id"
 )
 
-// metric keys for durations
+// Timer types
 const (
-	DurationWait = "wait"  // time spent waiting for work
-	DurationProc = "proc"  // time spent processing work
-	DurationInit = "init"  // time spent initializing
-	DurationWrap = "wrap"  // time spent wrapping up/finalizing
-	DurationFull = "total" // total time since start
+	TimerProc TimerType = iota // processing time
+	TimerWait                  // wait time
+	TimerInit                  // initialization time
+	TimerWrap                  // wrap-up time
 )
 
-// metric keys for counters
-const (
-	CountProcessed = "processed" // number of processed items
-	CountErrors    = "errors"    // number of errors
-	CountDropped   = "dropped"   // number of dropped items
-)
-
-// Value is a struct that holds the metrics for a given context
+// Value holds both per-worker stats and shared user stats
 type Value struct {
 	startTime time.Time
-	userLock  sync.RWMutex
-	userData  map[string]int
-	durations map[string]time.Duration
+
+	// per worker stats, no lock needed as each worker uses its own stats
+	workerStats []Stats
+
+	// shared user stats protected by mutex
+	mu       sync.RWMutex
+	userData map[string]int
 }
 
-// New makes thread-safe map to collect any counts/metrics
-func New() *Value {
+// Stats represents worker-specific metrics
+type Stats struct {
+	Processed      int
+	Errors         int
+	Dropped        int
+	ProcessingTime time.Duration
+	WaitTime       time.Duration
+	InitTime       time.Duration
+	WrapTime       time.Duration
+	TotalTime      time.Duration
+}
+
+// String returns stats info formatted as string
+func (s Stats) String() string {
+	var metrics []string
+
+	if s.Processed > 0 {
+		metrics = append(metrics, fmt.Sprintf("processed:%d", s.Processed))
+	}
+	if s.Errors > 0 {
+		metrics = append(metrics, fmt.Sprintf("errors:%d", s.Errors))
+	}
+	if s.Dropped > 0 {
+		metrics = append(metrics, fmt.Sprintf("dropped:%d", s.Dropped))
+	}
+	if s.ProcessingTime > 0 {
+		metrics = append(metrics, fmt.Sprintf("proc:%v", s.ProcessingTime.Round(time.Millisecond)))
+	}
+	if s.WaitTime > 0 {
+		metrics = append(metrics, fmt.Sprintf("wait:%v", s.WaitTime.Round(time.Millisecond)))
+	}
+	if s.InitTime > 0 {
+		metrics = append(metrics, fmt.Sprintf("init:%v", s.InitTime.Round(time.Millisecond)))
+	}
+	if s.WrapTime > 0 {
+		metrics = append(metrics, fmt.Sprintf("wrap:%v", s.WrapTime.Round(time.Millisecond)))
+	}
+	if s.TotalTime > 0 {
+		metrics = append(metrics, fmt.Sprintf("total:%v", s.TotalTime.Round(time.Millisecond)))
+	}
+
+	if len(metrics) > 0 {
+		return fmt.Sprintf("[%s]", strings.Join(metrics, ", "))
+	}
+	return ""
+}
+
+// New makes thread-safe metrics collector with specified number of workers
+func New(workers int) *Value {
 	return &Value{
-		startTime: time.Now(),
-		userData:  map[string]int{},
-		durations: map[string]time.Duration{},
+		startTime:   time.Now(),
+		workerStats: make([]Stats, workers),
+		userData:    make(map[string]int),
 	}
 }
 
 // Add increments value for a given key and returns new value
 func (m *Value) Add(key string, delta int) int {
-	m.userLock.Lock()
-	defer m.userLock.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.userData[key] += delta
 	return m.userData[key]
 }
@@ -63,71 +109,79 @@ func (m *Value) Inc(key string) int {
 	return m.Add(key, 1)
 }
 
-// AddDuration adds duration for a given key
-func (m *Value) AddDuration(key string, d time.Duration) {
-	m.userLock.Lock()
-	defer m.userLock.Unlock()
-	m.durations[key] += d
-}
-
-// GetDuration returns duration for given key
-func (m *Value) GetDuration(key string) time.Duration {
-	m.userLock.RLock()
-	defer m.userLock.RUnlock()
-	return m.durations[key]
-}
-
-// Set value for given key
-func (m *Value) Set(key string, val int) {
-	m.userLock.Lock()
-	defer m.userLock.Unlock()
-	m.userData[key] = val
-}
-
-// Get returns value for given key
+// Get returns value for given key from shared stats
 func (m *Value) Get(key string) int {
-	m.userLock.RLock()
-	defer m.userLock.RUnlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.userData[key]
 }
 
-// StartTimer returns a function that when called will record the duration since StartTimer was called
-func (m *Value) StartTimer(key string) func() {
+// StartTimer returns a function that when called will record the duration in worker stats
+func (m *Value) StartTimer(wid int, t TimerType) func() {
 	start := time.Now()
+	stats := &m.workerStats[wid]
+
 	return func() {
-		m.AddDuration(key, time.Since(start))
+		duration := time.Since(start)
+		switch t {
+		case TimerProc:
+			stats.ProcessingTime += duration
+		case TimerWait:
+			stats.WaitTime += duration
+		case TimerInit:
+			stats.InitTime += duration
+		case TimerWrap:
+			stats.WrapTime += duration
+		}
 	}
 }
 
-// String returns sorted key:vals string representation of metrics and adds duration
-func (m *Value) String() string {
-	m.userLock.RLock()
-	defer m.userLock.RUnlock()
+// IncProcessed increments processed count for worker
+func (m *Value) IncProcessed(wid int) {
+	m.workerStats[wid].Processed++
+}
 
-	// collect all keys for sorting
-	keys := make([]string, 0, len(m.userData)+len(m.durations)+1)
-	for k := range m.userData {
-		keys = append(keys, k)
+// IncErrors increments errors count for worker
+func (m *Value) IncErrors(wid int) {
+	m.workerStats[wid].Errors++
+}
+
+// IncDropped increments dropped count for worker
+func (m *Value) IncDropped(wid int) {
+	m.workerStats[wid].Dropped++
+}
+
+// GetStats returns combined stats from all workers
+func (m *Value) GetStats() Stats {
+	var result Stats
+	for i := range m.workerStats {
+		result.Processed += m.workerStats[i].Processed
+		result.Errors += m.workerStats[i].Errors
+		result.Dropped += m.workerStats[i].Dropped
+		result.ProcessingTime += m.workerStats[i].ProcessingTime
+		result.WaitTime += m.workerStats[i].WaitTime
+		result.InitTime += m.workerStats[i].InitTime
+		result.WrapTime += m.workerStats[i].WrapTime
 	}
-	for k := range m.durations {
+	result.TotalTime = time.Since(m.startTime)
+	return result
+}
+
+// String returns sorted key:vals string representation of user-defined metrics
+func (m *Value) String() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	keys := make([]string, 0, len(m.userData))
+	for k := range m.userData {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 
-	// build metrics string
-	var metrics []string
+	metrics := make([]string, 0, len(keys))
 	for _, k := range keys {
-		if v, ok := m.userData[k]; ok {
-			metrics = append(metrics, fmt.Sprintf("%s:%d", k, v))
-		}
-		if d, ok := m.durations[k]; ok {
-			metrics = append(metrics, fmt.Sprintf("%s:%v", k, d.Round(time.Millisecond)))
-		}
+		metrics = append(metrics, fmt.Sprintf("%s:%d", k, m.userData[k]))
 	}
-
-	// add total duration
-	total := time.Since(m.startTime)
-	metrics = append(metrics, fmt.Sprintf("%s:%v", DurationFull, total.Round(time.Millisecond)))
 
 	if len(metrics) > 0 {
 		return fmt.Sprintf("[%s]", strings.Join(metrics, ", "))
@@ -149,79 +203,18 @@ func WithWorkerID(ctx context.Context, id int) context.Context {
 	return context.WithValue(ctx, widContextKey, id)
 }
 
-// Get metrics from context
+// Get metrics from context. If not found, creates new instance with same worker count as stored in context.
 func Get(ctx context.Context) *Value {
-	res, ok := ctx.Value(metricsContextKey).(*Value)
-	if !ok {
-		return New()
+	if v, ok := ctx.Value(metricsContextKey).(*Value); ok {
+		return v
 	}
-	return res
+	if n, ok := ctx.Value(widContextKey).(int); ok {
+		return New(n + 1) // n is max worker id, need size = n+1
+	}
+	return New(1) // fallback to single worker
 }
 
 // Make context with metrics
-func Make(ctx context.Context) context.Context {
-	return context.WithValue(ctx, metricsContextKey, New())
-}
-
-// Aggregate combines multiple metrics values into a single one.
-// Adds all counters and durations from the provided values.
-func Aggregate(values ...*Value) *Value {
-	if len(values) == 0 {
-		return New()
-	}
-
-	result := New()
-	result.startTime = values[0].startTime // use first value's start time
-
-	for _, v := range values {
-		v.userLock.RLock()
-		// combine counters
-		for k, val := range v.userData {
-			result.userData[k] += val
-		}
-		// combine durations
-		for k, d := range v.durations {
-			result.durations[k] += d
-		}
-		v.userLock.RUnlock()
-	}
-
-	return result
-}
-
-// Stats represents all metrics in a single struct
-type Stats struct {
-	Processed      int
-	Errors         int
-	Dropped        int
-	ProcessingTime time.Duration
-	WaitTime       time.Duration
-	InitTime       time.Duration
-	WrapTime       time.Duration
-	TotalTime      time.Duration
-}
-
-// Stats returns all metrics as a single struct
-func (m *Value) Stats() Stats {
-	m.userLock.RLock()
-	defer m.userLock.RUnlock()
-
-	// calculate total time as max of time.Since(startTime) and sum of all durations
-	totalTime := time.Since(m.startTime)
-	durationsSum := m.durations[DurationProc] + m.durations[DurationWait] +
-		m.durations[DurationInit] + m.durations[DurationWrap]
-	if durationsSum > totalTime {
-		totalTime = durationsSum
-	}
-
-	return Stats{
-		Processed:      m.userData[CountProcessed],
-		Errors:         m.userData[CountErrors],
-		Dropped:        m.userData[CountDropped],
-		ProcessingTime: m.durations[DurationProc],
-		WaitTime:       m.durations[DurationWait],
-		InitTime:       m.durations[DurationInit],
-		WrapTime:       m.durations[DurationWrap],
-		TotalTime:      totalTime,
-	}
+func Make(ctx context.Context, workers int) context.Context {
+	return context.WithValue(ctx, metricsContextKey, New(workers))
 }

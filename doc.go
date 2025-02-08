@@ -83,7 +83,16 @@
 //
 // # Metrics
 //
-// The pool automatically collects various metrics including:
+// The pool automatically tracks standard stats metrics (processed counts, errors, timings).
+// Workers can also record additional custom metrics:
+//
+//	m := metrics.Get(ctx)
+//	m.Inc("custom-counter")
+//
+// Access metrics:
+// value := m.Get("custom-counter")
+//
+// Collected statistical metrics including:
 //
 //   - Number of processed items
 //   - Number of errors
@@ -93,7 +102,7 @@
 //   - Initialization time
 //   - Total time
 //
-// Access metrics:
+// Access stats:
 //
 //	stats := pool.Metrics().Stats()
 //	fmt.Printf("processed: %d, errors: %d", stats.Processed, stats.Errors)

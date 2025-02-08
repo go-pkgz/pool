@@ -256,7 +256,7 @@ func TestPool_Wait(t *testing.T) {
 
 	// verify all items were processed
 	mu.Lock()
-	assert.Len(t, processed, 3)
+	require.Len(t, processed, 3)
 	for _, v := range []string{"1", "2", "3"} {
 		require.True(t, processed[v], "item %s was not processed", v)
 	}
@@ -343,13 +343,10 @@ func TestPool_Distribution(t *testing.T) {
 
 func TestPool_Metrics(t *testing.T) {
 	t.Run("basic metrics", func(t *testing.T) {
+		var processed int32
 		worker := WorkerFunc[int](func(ctx context.Context, _ int) error {
-			m := metrics.Get(ctx)
-			procEnd := m.StartTimer(metrics.DurationProc)
-			time.Sleep(time.Millisecond)
-			procEnd()
-			m.Inc(metrics.CountProcessed)
-			m.Add("custom", 2)
+			time.Sleep(time.Millisecond) // simulate work
+			atomic.AddInt32(&processed, 1)
 			return nil
 		})
 
@@ -362,20 +359,21 @@ func TestPool_Metrics(t *testing.T) {
 		}
 		require.NoError(t, p.Close(context.Background()))
 
-		m := p.Metrics()
-		assert.Equal(t, 10, m.Get(metrics.CountProcessed))
-		assert.Greater(t, m.GetDuration(metrics.DurationProc), time.Duration(0))
-		assert.Equal(t, 0, m.Get(metrics.CountErrors))
-		assert.Equal(t, 20, m.Get("custom"))
+		stats := p.Metrics().GetStats()
+		assert.Equal(t, int(atomic.LoadInt32(&processed)), stats.Processed)
+		assert.Equal(t, 0, stats.Errors)
+		assert.Equal(t, 0, stats.Dropped)
+		assert.Greater(t, stats.ProcessingTime, time.Duration(0))
 	})
 
 	t.Run("metrics with errors", func(t *testing.T) {
+		var errs, processed int32
 		worker := WorkerFunc[int](func(ctx context.Context, v int) error {
-			m := metrics.Get(ctx)
-			m.Inc(metrics.CountProcessed)
 			if v%2 == 0 {
+				atomic.AddInt32(&errs, 1)
 				return errors.New("even number")
 			}
+			atomic.AddInt32(&processed, 1)
 			return nil
 		})
 
@@ -390,16 +388,20 @@ func TestPool_Metrics(t *testing.T) {
 		}
 		require.Error(t, p.Close(context.Background()))
 
-		m := p.Metrics()
-		assert.Equal(t, 10, m.Get(metrics.CountProcessed))
-		assert.Equal(t, 5, m.Get(metrics.CountErrors))
+		stats := p.Metrics().GetStats()
+		assert.Equal(t, int(atomic.LoadInt32(&processed)), stats.Processed)
+		assert.Equal(t, int(atomic.LoadInt32(&errs)), stats.Errors)
+		assert.Equal(t, 0, stats.Dropped)
 	})
 
 	t.Run("metrics with batching", func(t *testing.T) {
+		var custom, processed int32
 		worker := WorkerFunc[int](func(ctx context.Context, _ int) error {
 			m := metrics.Get(ctx)
-			m.Inc(metrics.CountProcessed)
 			m.Add("custom", 2)
+			atomic.AddInt32(&custom, 2)
+			atomic.AddInt32(&processed, 1)
+			t.Logf("Worker processed item, total processed: %d", atomic.LoadInt32(&processed))
 			return nil
 		})
 
@@ -409,24 +411,27 @@ func TestPool_Metrics(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, p.Go(context.Background()))
 
-		for i := 0; i < 10; i++ {
+		n := 10
+		for i := 0; i < n; i++ {
 			p.Submit(i)
 		}
 		require.NoError(t, p.Close(context.Background()))
 
-		m := p.Metrics()
-		assert.Equal(t, 10, m.Get(metrics.CountProcessed))
-		assert.Equal(t, 20, m.Get("custom"))
+		stats := p.Metrics().GetStats()
+		actualProcessed := atomic.LoadInt32(&processed)
+		t.Logf("Actual processed: %d, Stats processed: %d", actualProcessed, stats.Processed)
+		assert.Equal(t, int(actualProcessed), stats.Processed)
+		assert.Equal(t, int(atomic.LoadInt32(&custom)), p.Metrics().Get("custom"))
+
+		// verify both processed count and custom metric
+		assert.Equal(t, n, stats.Processed, "should process all items")
+		assert.Equal(t, n*2, p.Metrics().Get("custom"), "custom metric should be double the items")
 	})
 
 	t.Run("metrics timing", func(t *testing.T) {
 		const processingTime = 10 * time.Millisecond
-		worker := WorkerFunc[int](func(ctx context.Context, _ int) error {
-			m := metrics.Get(ctx)
-			procEnd := m.StartTimer(metrics.DurationProc)
+		worker := WorkerFunc[int](func(_ context.Context, _ int) error {
 			time.Sleep(processingTime)
-			procEnd()
-			m.Inc(metrics.CountProcessed)
 			return nil
 		})
 
@@ -438,24 +443,48 @@ func TestPool_Metrics(t *testing.T) {
 		p.Submit(2)
 		require.NoError(t, p.Close(context.Background()))
 
-		m := p.Metrics()
-		assert.Equal(t, 2, m.Get(metrics.CountProcessed))
-		assert.GreaterOrEqual(t, m.GetDuration(metrics.DurationProc), time.Millisecond*20)
-		assert.Less(t, m.GetDuration(metrics.DurationProc), time.Millisecond*30)
-		assert.Greater(t, m.GetDuration(metrics.DurationInit), time.Duration(0))
-		assert.Greater(t, m.GetDuration(metrics.DurationWrap), time.Duration(0))
+		stats := p.Metrics().GetStats()
+		assert.Equal(t, 2, stats.Processed)
+		assert.GreaterOrEqual(t, stats.ProcessingTime, 2*processingTime)
+		assert.Less(t, stats.ProcessingTime, 3*processingTime)
+		assert.Greater(t, stats.InitTime, time.Duration(0))
+		assert.Greater(t, stats.WrapTime, time.Duration(0))
+	})
+
+	t.Run("per worker stats", func(t *testing.T) {
+		var processed, errs int32
+		worker := WorkerFunc[int](func(ctx context.Context, v int) error {
+			time.Sleep(time.Millisecond)
+			if v%2 == 0 {
+				atomic.AddInt32(&errs, 1)
+				return errors.New("even error")
+			}
+			atomic.AddInt32(&processed, 1)
+			return nil
+		})
+
+		p, err := New[int](2, worker, Options[int]().WithContinueOnError())
+		require.NoError(t, err)
+		require.NoError(t, p.Go(context.Background()))
+
+		// submit enough items to ensure both workers get some
+		n := 100
+		for i := 0; i < n; i++ {
+			p.Submit(i)
+		}
+		require.Error(t, p.Close(context.Background()))
+
+		stats := p.Metrics().GetStats()
+		assert.Equal(t, int(atomic.LoadInt32(&processed)), stats.Processed)
+		assert.Equal(t, int(atomic.LoadInt32(&errs)), stats.Errors)
+		assert.Greater(t, stats.ProcessingTime, time.Duration(int64(n)*time.Millisecond.Nanoseconds()))
+		assert.Less(t, stats.ProcessingTime, time.Duration(int64(n*2)*time.Millisecond.Nanoseconds()))
 	})
 }
 
-func TestPool_MetricsAsStruct(t *testing.T) {
-	var processed int32
-	worker := WorkerFunc[int](func(ctx context.Context, _ int) error {
-		atomic.AddInt32(&processed, 1) // track actual processing count
-		m := metrics.Get(ctx)
-		procEnd := m.StartTimer(metrics.DurationProc)
+func TestPool_MetricsString(t *testing.T) {
+	worker := WorkerFunc[int](func(_ context.Context, _ int) error {
 		time.Sleep(time.Millisecond)
-		procEnd()
-		m.Inc(metrics.CountProcessed)
 		return nil
 	})
 
@@ -463,30 +492,21 @@ func TestPool_MetricsAsStruct(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, p.Go(context.Background()))
 
-	// submit 3 items
 	p.Submit(1)
 	p.Submit(2)
-	p.Submit(3)
 	require.NoError(t, p.Close(context.Background()))
 
-	stats := p.Metrics().Stats()
-	t.Logf("Stats: %+v", stats)
-	t.Logf("Actual processed: %d", atomic.LoadInt32(&processed))
+	// check stats string format
+	stats := p.Metrics().GetStats()
+	str := stats.String()
+	assert.Contains(t, str, "processed:2")
+	assert.Contains(t, str, "proc:")
+	assert.Contains(t, str, "total:")
 
-	// verify counts
-	assert.Equal(t, 3, stats.Processed)
-	assert.Equal(t, 0, stats.Errors)
-	assert.Equal(t, 0, stats.Dropped)
-
-	// verify timings
-	assert.Greater(t, stats.ProcessingTime, time.Duration(0))
-	assert.Greater(t, stats.WaitTime, time.Duration(0))
-	assert.Greater(t, stats.InitTime, time.Duration(0))
-	assert.Greater(t, stats.WrapTime, time.Duration(0))
-	assert.Greater(t, stats.TotalTime, time.Duration(0))
-
-	// verify actual vs reported processing
-	assert.Equal(t, int(processed), stats.Processed, "processed count mismatch")
+	// check user metrics string format
+	p.Metrics().Add("custom", 5)
+	str = p.Metrics().String()
+	assert.Contains(t, str, "custom:5")
 }
 
 func TestPool_FinalizeWorker(t *testing.T) {

@@ -2,252 +2,308 @@ package metrics
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestMetrics(t *testing.T) {
-	m := New()
+func TestMetrics_UserDefined(t *testing.T) {
+	m := New(1) // single worker is enough for user stats testing
 
-	m.Add("k1", 100)
-	m.Inc("k1")
+	t.Run("basic operations", func(t *testing.T) {
+		m.Add("k1", 100)
+		m.Inc("k1")
+		m.Inc("k2")
 
-	m.Inc("k2")
+		assert.Equal(t, 101, m.Get("k1"))
+		assert.Equal(t, 1, m.Get("k2"))
+		assert.Equal(t, 0, m.Get("k3"))
 
-	t.Log(m)
+		str := m.String()
+		assert.Contains(t, str, "k1:101")
+		assert.Contains(t, str, "k2:1")
+	})
 
-	assert.Equal(t, 101, m.Get("k1"))
-	assert.Equal(t, 1, m.Get("k2"))
-	assert.Equal(t, 0, m.Get("k3"))
+	t.Run("string formatting", func(t *testing.T) {
+		m := New(10)
+		assert.Equal(t, "", m.String(), "empty metrics should return empty string")
 
-	str := m.String()
-	assert.Contains(t, str, "k1:101")
-	assert.Contains(t, str, "k2:1")
-	assert.Contains(t, str, "total:") // just verify total is present
+		m.Inc("test")
+		assert.Equal(t, "[test:1]", m.String())
+
+		m.Add("another", 5)
+		str := m.String()
+		assert.Contains(t, str, "test:1")
+		assert.Contains(t, str, "another:5")
+	})
 }
 
-func TestWorkerID(t *testing.T) {
-	ctx := context.Background()
-	ctx = WithWorkerID(ctx, 123)
-	assert.Equal(t, 123, WorkerID(ctx))
+func TestMetrics_WorkerStats(t *testing.T) {
+	m := New(2) // create metrics for 2 workers
+
+	t.Run("worker timers", func(t *testing.T) {
+		// worker 1 operations
+		end := m.StartTimer(0, TimerProc)
+		time.Sleep(10 * time.Millisecond)
+		end()
+
+		end = m.StartTimer(0, TimerWait)
+		time.Sleep(10 * time.Millisecond)
+		end()
+
+		// worker 2 operations
+		end = m.StartTimer(1, TimerProc)
+		time.Sleep(15 * time.Millisecond)
+		end()
+
+		stats := m.GetStats()
+		assert.Greater(t, stats.ProcessingTime, 25*time.Millisecond)
+		assert.Greater(t, stats.WaitTime, 10*time.Millisecond)
+		assert.Greater(t, stats.TotalTime, stats.WaitTime)
+		assert.Greater(t, stats.TotalTime, stats.ProcessingTime)
+	})
+
+	t.Run("worker counters", func(t *testing.T) {
+		// worker 1 increments
+		m.IncProcessed(0)
+		m.IncProcessed(0)
+		m.IncErrors(0)
+
+		// worker 2 increments
+		m.IncProcessed(1)
+		m.IncDropped(1)
+
+		stats := m.GetStats()
+		assert.Equal(t, 3, stats.Processed)
+		assert.Equal(t, 1, stats.Errors)
+		assert.Equal(t, 1, stats.Dropped)
+	})
+
+	t.Run("stats string", func(t *testing.T) {
+		m := New(1)
+		m.IncProcessed(0)
+		m.IncErrors(0)
+		end := m.StartTimer(0, TimerProc)
+		time.Sleep(10 * time.Millisecond)
+		end()
+
+		stats := m.GetStats()
+		str := stats.String()
+		assert.Contains(t, str, "processed:1")
+		assert.Contains(t, str, "errors:1")
+		assert.Contains(t, str, "proc:")
+		assert.Contains(t, str, "total:")
+	})
 }
 
-func TestGet(t *testing.T) {
-	ctx := Make(context.Background())
-	val := Get(ctx)
-	val.Set("k1", 100)
-	val.Inc("k1")
+func TestMetrics_Context(t *testing.T) {
+	t.Run("worker id", func(t *testing.T) {
+		ctx := WithWorkerID(context.Background(), 123)
+		assert.Equal(t, 123, WorkerID(ctx))
 
-	vv := Get(ctx)
-	assert.Equal(t, 101, vv.Get("k1"))
-}
+		ctx = context.Background()
+		assert.Equal(t, 0, WorkerID(ctx))
 
-func TestMetricsEnhanced(t *testing.T) {
-	m := New()
-
-	// simulate initialization
-	initEnd := m.StartTimer(DurationInit)
-	time.Sleep(10 * time.Millisecond)
-	initEnd()
-
-	// simulate wait and processing
-	waitEnd := m.StartTimer(DurationWait)
-	time.Sleep(10 * time.Millisecond)
-	waitEnd()
-
-	procEnd := m.StartTimer(DurationProc)
-	time.Sleep(20 * time.Millisecond)
-	procEnd()
-
-	m.Inc(CountProcessed)
-	m.Inc(CountProcessed)
-	m.Inc(CountErrors)
-
-	assert.Greater(t, m.GetDuration(DurationInit), time.Duration(0))
-	assert.Greater(t, m.GetDuration(DurationWait), time.Duration(0))
-	assert.Greater(t, m.GetDuration(DurationProc), time.Duration(0))
-	assert.Equal(t, 2, m.Get(CountProcessed))
-	assert.Equal(t, 1, m.Get(CountErrors))
-
-	// check string representation includes all metrics
-	str := m.String()
-	t.Log("Metrics:", str)
-	assert.Contains(t, str, DurationInit+":")
-	assert.Contains(t, str, DurationWait+":")
-	assert.Contains(t, str, DurationProc+":")
-	assert.Contains(t, str, CountProcessed+":2")
-	assert.Contains(t, str, CountErrors+":1")
-}
-
-func TestMetrics_Aggregate(t *testing.T) {
-	m1 := New()
-	m1.Inc(CountProcessed)
-	m1.Inc(CountErrors)
-	m1.AddDuration(DurationWait, time.Second)
-
-	m2 := New()
-	m2.Inc(CountProcessed)
-	m2.Inc(CountProcessed)
-	m2.AddDuration(DurationWait, 2*time.Second)
-	m2.AddDuration(DurationProc, time.Second)
-
-	combined := Aggregate(m1, m2)
-	assert.Equal(t, 3, combined.Get(CountProcessed))
-	assert.Equal(t, 1, combined.Get(CountErrors))
-	assert.Equal(t, 3*time.Second, combined.GetDuration(DurationWait))
-	assert.Equal(t, time.Second, combined.GetDuration(DurationProc))
-}
-
-func TestMetricsStats_Timing(t *testing.T) {
-	m := New()
-
-	// simulate some processing that takes time
-	procEnd := m.StartTimer(DurationProc)
-	time.Sleep(50 * time.Millisecond)
-	procEnd()
-
-	// get stats right after processing
-	stats := m.Stats()
-
-	t.Logf("Total time: %v", stats.TotalTime)
-	t.Logf("Processing time: %v", stats.ProcessingTime)
-
-	// total time should be greater than or equal to processing time
-	assert.GreaterOrEqual(t, stats.TotalTime, stats.ProcessingTime,
-		"total time (%v) should be >= processing time (%v)",
-		stats.TotalTime, stats.ProcessingTime)
-}
-
-func TestMetrics_ContextValues(t *testing.T) {
-	t.Run("worker id from context", func(t *testing.T) {
-		t.Run("valid worker id", func(t *testing.T) {
-			ctx := WithWorkerID(context.Background(), 123)
-			assert.Equal(t, 123, WorkerID(ctx))
-		})
-
-		t.Run("missing worker id", func(t *testing.T) {
-			ctx := context.Background()
-			assert.Equal(t, 0, WorkerID(ctx))
-		})
-
-		t.Run("invalid worker id type", func(t *testing.T) {
-			ctx := context.WithValue(context.Background(), widContextKey, "not an int")
-			assert.Equal(t, 0, WorkerID(ctx))
-		})
+		ctx = context.WithValue(context.Background(), widContextKey, "not an int")
+		assert.Equal(t, 0, WorkerID(ctx))
 	})
 
 	t.Run("metrics from context", func(t *testing.T) {
-		t.Run("valid metrics", func(t *testing.T) {
-			ctx := Make(context.Background())
-			m := Get(ctx)
-			assert.NotNil(t, m)
-
-			// verify it's a working metrics instance
-			m.Inc("test")
-			assert.Equal(t, 1, m.Get("test"))
-		})
-
-		t.Run("missing metrics", func(t *testing.T) {
-			ctx := context.Background()
-			m := Get(ctx)
-			assert.NotNil(t, m, "should return new metrics instance")
-
-			// verify it's a working metrics instance
-			m.Inc("test")
-			assert.Equal(t, 1, m.Get("test"))
-		})
-
-		t.Run("invalid metrics type", func(t *testing.T) {
-			ctx := context.WithValue(context.Background(), metricsContextKey, "not metrics")
-			m := Get(ctx)
-			assert.NotNil(t, m, "should return new metrics instance")
-
-			// verify it's a working metrics instance
-			m.Inc("test")
-			assert.Equal(t, 1, m.Get("test"))
-		})
-
-		t.Run("metrics values isolated", func(t *testing.T) {
-			ctx1 := Make(context.Background())
-			ctx2 := Make(context.Background())
-
-			m1 := Get(ctx1)
-			m2 := Get(ctx2)
-
-			m1.Inc("test")
-			assert.Equal(t, 1, m1.Get("test"))
-			assert.Equal(t, 0, m2.Get("test"), "metrics should be isolated")
-		})
-	})
-
-	t.Run("combined worker id and metrics", func(t *testing.T) {
-		ctx := Make(context.Background())
-		ctx = WithWorkerID(ctx, 42)
-
-		assert.Equal(t, 42, WorkerID(ctx))
+		ctx := Make(context.Background(), 2)
 		m := Get(ctx)
-		assert.NotNil(t, m)
+		require.NotNil(t, m)
 
 		// verify metrics working
 		m.Inc("test")
 		assert.Equal(t, 1, m.Get("test"))
+
+		// verify worker stats
+		m.IncProcessed(0)
+		stats := m.GetStats()
+		assert.Equal(t, 1, stats.Processed)
+	})
+
+	t.Run("metrics isolation", func(t *testing.T) {
+		ctx1 := Make(context.Background(), 1)
+		ctx2 := Make(context.Background(), 1)
+
+		m1 := Get(ctx1)
+		m2 := Get(ctx2)
+
+		m1.Inc("test")
+		assert.Equal(t, 1, m1.Get("test"))
+		assert.Equal(t, 0, m2.Get("test"))
+	})
+
+	t.Run("metrics creation from worker id", func(t *testing.T) {
+		ctx := WithWorkerID(context.Background(), 5)
+		m := Get(ctx)
+		require.NotNil(t, m)
+
+		// should be able to use worker id 5
+		m.IncProcessed(5)
+		stats := m.GetStats()
+		assert.Equal(t, 1, stats.Processed)
 	})
 }
 
-func TestMetrics_Stats(t *testing.T) {
-	t.Run("all durations", func(t *testing.T) {
-		m := New()
-		m.AddDuration(DurationProc, time.Second)
-		m.AddDuration(DurationWait, 2*time.Second)
-		m.AddDuration(DurationInit, 3*time.Second)
-		m.AddDuration(DurationWrap, 4*time.Second)
+func TestMetrics_Concurrent(t *testing.T) {
+	t.Run("concurrent user stats access", func(t *testing.T) {
+		m := New(1)
+		const goroutines = 10
+		const iterations = 1000
 
-		stats := m.Stats()
-		assert.Equal(t, time.Second, stats.ProcessingTime)
-		assert.Equal(t, 2*time.Second, stats.WaitTime)
-		assert.Equal(t, 3*time.Second, stats.InitTime)
-		assert.Equal(t, 4*time.Second, stats.WrapTime)
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
 
-		// total time should be max of time.Since(startTime) and sum of all durations
-		expectedTotal := 10 * time.Second // sum of all durations
-		assert.GreaterOrEqual(t, stats.TotalTime, expectedTotal)
+		for i := 0; i < goroutines; i++ {
+			go func() {
+				defer wg.Done()
+				for j := 0; j < iterations; j++ {
+					m.Inc("counter")
+					val := m.Get("counter")
+					assert.Positive(t, val)
+					m.Add("sum", 2)
+				}
+			}()
+		}
+		wg.Wait()
+
+		assert.Equal(t, goroutines*iterations, m.Get("counter"))
+		assert.Equal(t, goroutines*iterations*2, m.Get("sum"))
 	})
 
-	t.Run("all counters", func(t *testing.T) {
-		m := New()
-		m.Inc(CountProcessed)
-		m.Inc(CountProcessed)
-		m.Inc(CountErrors)
-		m.Inc(CountDropped)
-		m.Inc(CountDropped)
-		m.Inc(CountDropped)
+	t.Run("per worker stats", func(t *testing.T) {
+		const workers = 4
+		m := New(workers)
+		var wg sync.WaitGroup
+		wg.Add(workers)
 
-		stats := m.Stats()
-		assert.Equal(t, 2, stats.Processed)
-		assert.Equal(t, 1, stats.Errors)
-		assert.Equal(t, 3, stats.Dropped)
+		// each worker operates on its own stats
+		for wid := 0; wid < workers; wid++ {
+			go func(id int) {
+				defer wg.Done()
+				const iterations = 1000
+
+				for j := 0; j < iterations; j++ {
+					m.IncProcessed(id)
+					end := m.StartTimer(id, TimerProc)
+					time.Sleep(time.Microsecond)
+					end()
+				}
+			}(wid)
+		}
+		wg.Wait()
+
+		stats := m.GetStats()
+		assert.Equal(t, workers*1000, stats.Processed)
+		assert.Greater(t, stats.ProcessingTime, time.Duration(0))
+
+		// verify each worker's stats are accurate
+		for wid := 0; wid < workers; wid++ {
+			assert.Equal(t, 1000, m.workerStats[wid].Processed)
+			assert.Greater(t, m.workerStats[wid].ProcessingTime, time.Duration(0))
+		}
 	})
+}
 
-	t.Run("total time calculation", func(t *testing.T) {
-		m := New()
+func TestMetrics_AllTimerTypes(t *testing.T) {
+	m := New(1)
 
-		// make sure some time passes
-		time.Sleep(time.Millisecond * 10)
+	// record each timer type
+	end := m.StartTimer(0, TimerProc)
+	time.Sleep(time.Millisecond)
+	end()
 
-		// add durations less than elapsed time
-		m.AddDuration(DurationProc, time.Millisecond)
-		m.AddDuration(DurationWait, time.Millisecond)
+	end = m.StartTimer(0, TimerWait)
+	time.Sleep(time.Millisecond)
+	end()
 
-		stats := m.Stats()
-		// total time should be time.Since(startTime) as it's greater
-		assert.Greater(t, stats.TotalTime, 2*time.Millisecond)
+	end = m.StartTimer(0, TimerInit)
+	time.Sleep(time.Millisecond)
+	end()
 
-		// now add duration greater than elapsed
-		m.AddDuration(DurationProc, time.Second)
-		stats = m.Stats()
-		// total time should be sum of durations as it's greater
-		assert.Greater(t, stats.TotalTime, time.Second)
-	})
+	end = m.StartTimer(0, TimerWrap)
+	time.Sleep(time.Millisecond)
+	end()
+
+	// verify each timer recorded something
+	stats := m.workerStats[0]
+	assert.Greater(t, stats.ProcessingTime, time.Duration(0), "ProcessingTime should be recorded")
+	assert.Greater(t, stats.WaitTime, time.Duration(0), "WaitTime should be recorded")
+	assert.Greater(t, stats.InitTime, time.Duration(0), "InitTime should be recorded")
+	assert.Greater(t, stats.WrapTime, time.Duration(0), "WrapTime should be recorded")
+
+	// test unknown timer type
+	end = m.StartTimer(0, TimerType(99))
+	time.Sleep(time.Millisecond)
+	end()
+	// stats should remain unchanged
+	newStats := m.workerStats[0]
+	assert.Equal(t, stats, newStats, "unknown timer type should not affect stats")
+}
+func TestStats_String(t *testing.T) {
+	tests := []struct {
+		name     string
+		stats    Stats
+		expected string
+	}{
+		{
+			name:     "empty stats",
+			stats:    Stats{},
+			expected: "",
+		},
+		{
+			name: "only counters",
+			stats: Stats{
+				Processed: 10,
+				Errors:    2,
+				Dropped:   3,
+			},
+			expected: "[processed:10, errors:2, dropped:3]",
+		},
+		{
+			name: "only timers",
+			stats: Stats{
+				ProcessingTime: time.Second,
+				WaitTime:       2 * time.Second,
+				InitTime:       3 * time.Second,
+				WrapTime:       4 * time.Second,
+				TotalTime:      10 * time.Second,
+			},
+			expected: "[proc:1s, wait:2s, init:3s, wrap:4s, total:10s]",
+		},
+		{
+			name: "all fields",
+			stats: Stats{
+				Processed:      10,
+				Errors:         2,
+				Dropped:        3,
+				ProcessingTime: time.Second,
+				WaitTime:       2 * time.Second,
+				InitTime:       3 * time.Second,
+				WrapTime:       4 * time.Second,
+				TotalTime:      10 * time.Second,
+			},
+			expected: "[processed:10, errors:2, dropped:3, proc:1s, wait:2s, init:3s, wrap:4s, total:10s]",
+		},
+		{
+			name: "some fields zero",
+			stats: Stats{
+				Processed:      10,
+				ProcessingTime: time.Second,
+				TotalTime:      10 * time.Second,
+			},
+			expected: "[processed:10, proc:1s, total:10s]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, tt.stats.String())
+		})
+	}
 }

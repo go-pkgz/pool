@@ -26,9 +26,9 @@ type WorkerGroup[T any] struct {
 	completeFn      CompleteFn[T]  // completion callback function, called by each worker on completion
 	continueOnError bool           // don't terminate on first error
 
-	buf        [][]T             // batch buffers for workers
-	workersCh  []chan []T        // workers input channels
-	workerCtxs []context.Context // store worker contexts
+	buf       [][]T          // batch buffers for workers
+	workersCh []chan []T     // workers input channels
+	metrics   *metrics.Value // shared metrics
 
 	eg  *errgroup.Group
 	err struct {
@@ -74,7 +74,6 @@ func New[T any](size int, worker Worker[T], opts ...Option[T]) (*WorkerGroup[T],
 		poolSize:       size,
 		workersCh:      make([]chan []T, size),
 		buf:            make([][]T, size),
-		workerCtxs:     make([]context.Context, size),
 		worker:         worker,
 		batchSize:      1,
 		workerChanSize: 1,
@@ -113,7 +112,6 @@ func NewStateful[T any](size int, maker func() Worker[T], opts ...Option[T]) (*W
 		poolSize:       size,
 		workersCh:      make([]chan []T, size),
 		buf:            make([][]T, size),
-		workerCtxs:     make([]context.Context, size),
 		workerMaker:    maker,
 		batchSize:      1,
 		workerChanSize: 1,
@@ -185,11 +183,13 @@ func (p *WorkerGroup[T]) Go(ctx context.Context) error {
 	p.eg, egCtx = errgroup.WithContext(ctx)
 	p.ctx = egCtx
 
+	// create shared metrics context for workers
+	workerCtx := metrics.Make(egCtx, p.poolSize)
+	p.metrics = metrics.Get(workerCtx)
+
 	// start all goroutines
 	for i := range p.poolSize {
-		workerCtx := metrics.Make(metrics.WithWorkerID(egCtx, i))
-		p.workerCtxs[i] = workerCtx
-		p.eg.Go(p.workerProc(workerCtx, i, p.workersCh[i]))
+		p.eg.Go(p.workerProc(metrics.WithWorkerID(workerCtx, i), i, p.workersCh[i]))
 	}
 
 	return nil
@@ -212,14 +212,14 @@ func (p *WorkerGroup[T]) workerProc(wCtx context.Context, id int, inCh chan []T)
 		}
 
 		// track initialization time
-		initEndTmr := m.StartTimer(metrics.DurationInit)
+		initEndTmr := m.StartTimer(id, metrics.TimerInit)
 		initEndTmr()
 
 		for {
 			select {
 			case vv, ok := <-inCh:
 				if !ok { // input channel closed
-					wrapEndTmr := m.StartTimer(metrics.DurationWrap)
+					wrapEndTmr := m.StartTimer(id, metrics.TimerWrap)
 					e := p.finalizeWorker(wCtx, id, worker)
 					wrapEndTmr()
 					if e != nil {
@@ -232,18 +232,20 @@ func (p *WorkerGroup[T]) workerProc(wCtx context.Context, id int, inCh chan []T)
 				}
 
 				// track wait time - from when item was received till processing starts
-				waitEndTmr := m.StartTimer(metrics.DurationWait)
+				waitEndTmr := m.StartTimer(id, metrics.TimerWait)
 
 				// read from the input slice
 				for _, v := range vv {
 					// even if not continue on error has to read from input channel all it has
 					if lastErr != nil && !p.continueOnError {
-						m.Inc(metrics.CountDropped)
+						m.IncDropped(id)
 						continue
 					}
 
+					procEndTmr := m.StartTimer(id, metrics.TimerProc)
 					if err := worker.Do(wCtx, v); err != nil {
-						m.Inc(metrics.CountErrors)
+						procEndTmr()
+						m.IncErrors(id)
 						e := fmt.Errorf("worker %d failed: %w", id, err)
 						if !p.continueOnError {
 							// close err.ch once. indicates to Submit what all other records can be ignored
@@ -251,7 +253,10 @@ func (p *WorkerGroup[T]) workerProc(wCtx context.Context, id int, inCh chan []T)
 						}
 						totalErrs++
 						lastErr = e // errors allowed to continue, capture the last error only
+						continue
 					}
+					procEndTmr()
+					m.IncProcessed(id)
 				}
 				waitEndTmr()
 
@@ -273,11 +278,17 @@ func (p *WorkerGroup[T]) workerProc(wCtx context.Context, id int, inCh chan []T)
 func (p *WorkerGroup[T]) finalizeWorker(ctx context.Context, id int, worker Worker[T]) (err error) {
 	// process all requests left in the not submitted yet buffer
 	for _, v := range p.buf[id] {
+		procEndTmr := p.metrics.StartTimer(id, metrics.TimerProc)
 		if e := worker.Do(ctx, v); e != nil {
+			procEndTmr()
+			p.metrics.IncErrors(id)
 			if !p.continueOnError {
 				return fmt.Errorf("worker %d failed in finalizer: %w", id, e)
 			}
+			continue
 		}
+		procEndTmr()
+		p.metrics.IncProcessed(id)
 	}
 
 	// call completeFn for given worker id
@@ -333,9 +344,5 @@ func (p *WorkerGroup[T]) Wait(ctx context.Context) (err error) {
 
 // Metrics returns combined metrics from all workers
 func (p *WorkerGroup[T]) Metrics() *metrics.Value {
-	values := make([]*metrics.Value, p.poolSize)
-	for i := range p.poolSize {
-		values[i] = metrics.Get(p.workerCtxs[i])
-	}
-	return metrics.Aggregate(values...)
+	return p.metrics
 }

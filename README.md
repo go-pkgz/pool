@@ -336,26 +336,16 @@ p, _ := pool.NewStateful[string](2, maker)
 ```go
 // create worker with metrics tracking
 worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
+    // track custom metrics only, pool handles standard metrics automatically
     m := metrics.Get(ctx)
-    
-    // track operation timing
-    operationEnd := m.StartTimer("operation")
-    defer operationEnd()
-    
-    // simulate work
-    time.Sleep(time.Millisecond * 100)
-    
-    // track custom metrics
     if strings.HasPrefix(v, "important") {
         m.Inc("important-tasks")
     }
     
-    // track success/failure
+    // process the value
     if err := process(v); err != nil {
-        m.Inc(metrics.CountErrors)
         return err
     }
-    m.Inc(metrics.CountProcessed)
     return nil
 })
 
@@ -369,17 +359,16 @@ p.Submit("important-task2")
 p.Close(context.Background())
 
 // get structured metrics
-stats := p.Metrics().Stats()
+stats := p.Metrics().GetStats()
 fmt.Printf("Processed: %d\n", stats.Processed)
 fmt.Printf("Errors: %d\n", stats.Errors)
 fmt.Printf("Processing time: %v\n", stats.ProcessingTime)
 fmt.Printf("Wait time: %v\n", stats.WaitTime)
 fmt.Printf("Total time: %v\n", stats.TotalTime)
 
-// get raw metrics
+// get user-defined metrics
 m := p.Metrics()
 fmt.Printf("Important tasks: %d\n", m.Get("important-tasks"))
-fmt.Printf("Operation time: %v\n", m.GetDuration("operation"))
 ```
 
 ## Complete Example: Processing Pipeline
