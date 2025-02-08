@@ -349,6 +349,7 @@ func TestPool_Metrics(t *testing.T) {
 			time.Sleep(time.Millisecond)
 			procEnd()
 			m.Inc(metrics.CountProcessed)
+			m.Add("custom", 2)
 			return nil
 		})
 
@@ -365,6 +366,7 @@ func TestPool_Metrics(t *testing.T) {
 		assert.Equal(t, 10, m.Get(metrics.CountProcessed))
 		assert.Greater(t, m.GetDuration(metrics.DurationProc), time.Duration(0))
 		assert.Equal(t, 0, m.Get(metrics.CountErrors))
+		assert.Equal(t, 20, m.Get("custom"))
 	})
 
 	t.Run("metrics with errors", func(t *testing.T) {
@@ -397,6 +399,7 @@ func TestPool_Metrics(t *testing.T) {
 		worker := WorkerFunc[int](func(ctx context.Context, _ int) error {
 			m := metrics.Get(ctx)
 			m.Inc(metrics.CountProcessed)
+			m.Add("custom", 2)
 			return nil
 		})
 
@@ -413,6 +416,7 @@ func TestPool_Metrics(t *testing.T) {
 
 		m := p.Metrics()
 		assert.Equal(t, 10, m.Get(metrics.CountProcessed))
+		assert.Equal(t, 20, m.Get("custom"))
 	})
 
 	t.Run("metrics timing", func(t *testing.T) {
