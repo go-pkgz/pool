@@ -9,7 +9,7 @@
 - Support for both stateless shared workers and per-worker instances
 - Batching capability for processing multiple items at once
 - Customizable work distribution through chunk functions
-- Built-in metrics collection (processing times, counts, etc.)
+- Built-in metrics collection (processing times, counts, custom metrics, etc.)
 - Error handling with continue/stop options
 - Context-based cancellation and timeouts
 - Optional completion callbacks
