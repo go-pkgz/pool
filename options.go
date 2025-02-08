@@ -15,6 +15,7 @@ func Options[T any]() options[T] { //nolint:revive // no need for exporting this
 
 // WithChunkFn sets the chunk function, converting a value to some sort of hash.
 // This is used to distribute values to workers predictably.
+// Default: none
 func (options[T]) WithChunkFn(fn func(T) string) Option[T] {
 	return func(p *WorkerGroup[T]) {
 		p.chunkFn = fn
@@ -22,6 +23,8 @@ func (options[T]) WithChunkFn(fn func(T) string) Option[T] {
 }
 
 // WithCompleteFn sets the complete function, called when the pool is complete.
+// This is useful for cleanup or finalization tasks.
+// Default: none
 func (options[T]) WithCompleteFn(fn CompleteFn[T]) Option[T] {
 	return func(p *WorkerGroup[T]) {
 		p.completeFn = fn
@@ -30,14 +33,16 @@ func (options[T]) WithCompleteFn(fn CompleteFn[T]) Option[T] {
 
 // WithBatchSize sets the size of the batches. This is used to send multiple values
 // to workers in a single batch. This can be useful to reduce contention on worker channels.
+// Default: 1 (no batching)
 func (options[T]) WithBatchSize(size int) Option[T] {
 	return func(p *WorkerGroup[T]) {
 		p.batchSize = size
 	}
 }
 
-// WithWorkerChanSize sets the size of the worker channel. Echo worker has its own channel
+// WithWorkerChanSize sets the size of the worker channel. Each worker has its own channel
 // to receive values from the pool and process them.
+// Default: 1 (unbuffered)
 func (options[T]) WithWorkerChanSize(size int) Option[T] {
 	return func(p *WorkerGroup[T]) {
 		p.workerChanSize = size
@@ -45,6 +50,7 @@ func (options[T]) WithWorkerChanSize(size int) Option[T] {
 }
 
 // WithContext sets the context for the pool. This is used to control the lifecycle of the pool.
+// Default: context.Background()
 func (options[T]) WithContext(ctx context.Context) Option[T] {
 	return func(p *WorkerGroup[T]) {
 		p.ctx = ctx
@@ -52,6 +58,7 @@ func (options[T]) WithContext(ctx context.Context) Option[T] {
 }
 
 // WithContinueOnError sets whether the pool should continue on error.
+// Default: false
 func (options[T]) WithContinueOnError() Option[T] {
 	return func(p *WorkerGroup[T]) {
 		p.continueOnError = true

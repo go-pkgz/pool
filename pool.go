@@ -137,7 +137,8 @@ func NewStateful[T any](size int, maker func() Worker[T], opts ...Option[T]) (*W
 	return res, nil
 }
 
-// Submit record to pool, can be blocked if worker channels are full
+// Submit record to pool, can be blocked if worker channels are full.
+// The call is ignored if the pool is stopping due to an error in non-continueOnError mode.
 func (p *WorkerGroup[T]) Submit(v T) {
 	// randomize distribution by default
 	id := rand.Intn(p.poolSize) //nolint:gosec // no need for secure random here, just distribution
@@ -164,7 +165,7 @@ func (p *WorkerGroup[T]) Submit(v T) {
 
 	p.buf[id] = append(p.buf[id], v)   // add to batch buffer
 	if len(p.buf[id]) >= p.batchSize { // submit buffer to workers
-		// commit copy to workers
+		// create a copy to avoid race conditions
 		cp := make([]T, len(p.buf[id]))
 		copy(cp, p.buf[id])
 		p.workersCh[id] <- cp
@@ -179,7 +180,7 @@ func (p *WorkerGroup[T]) Go(ctx context.Context) error {
 	}
 	defer func() { p.activated = true }()
 
-	// Create errgroup first
+	// create errgroup to track all workers
 	var egCtx context.Context
 	p.eg, egCtx = errgroup.WithContext(ctx)
 	p.ctx = egCtx
@@ -258,7 +259,7 @@ func (p *WorkerGroup[T]) workerProc(wCtx context.Context, id int, inCh chan []T)
 				return p.ctx.Err()
 
 			case <-wCtx.Done(): // worker context from errgroup
-				// triggered by other worker, kill only if errors not allowed
+				// triggered by another worker, kill only if errors not allowed
 				if !p.continueOnError {
 					return wCtx.Err()
 				}
@@ -312,7 +313,7 @@ func (p *WorkerGroup[T]) Close(ctx context.Context) (err error) {
 	}
 }
 
-// Wait till workers completed and result channel closed. This can be used instead of the cursor
+// Wait till workers completed and the result channel closed. This can be used instead of the cursor
 // in case if the result channel can be ignored and the goal is to wait for the completion.
 func (p *WorkerGroup[T]) Wait(ctx context.Context) (err error) {
 	doneCh := make(chan error)
