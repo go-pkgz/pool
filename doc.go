@@ -5,12 +5,41 @@
 //   - New - for pools with a single shared worker instance
 //   - NewStateful - for pools where each goroutine gets its own worker instance
 //
-// # Basic Usage
+// Worker Types:
+//
+// The package provides a simple Worker interface that can be implemented in two ways:
+//
+//	type Worker[T any] interface {
+//	    Do(ctx context.Context, v T) error
+//	}
+//
+// 1. Direct implementation for complex stateful workers:
+//
+//	type dbWorker struct {
+//	    conn *sql.DB
+//	}
+//
+//	func (w *dbWorker) Do(ctx context.Context, v string) error {
+//	    return w.conn.ExecContext(ctx, "INSERT INTO items (value) VALUES (?)", v)
+//	}
+//
+// 2. Function adapter for simple stateless workers:
+//
+//	worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
+//	    // process the value
+//	    return nil
+//	})
+//
+// Basic Usage:
 //
 // For stateless operations (like HTTP requests, parsing operations, etc.):
 //
 //	worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
-//	    // process the value
+//	    resp, err := http.Get(v)
+//	    if err != nil {
+//	        return err
+//	    }
+//	    defer resp.Body.Close()
 //	    return nil
 //	})
 //
@@ -33,7 +62,6 @@
 //
 // For stateful operations (like database connections, file handles, etc.):
 //
-//	// create worker maker function
 //	maker := func() pool.Worker[string] {
 //	    return &dbWorker{
 //	        conn: openConnection(),
@@ -45,9 +73,7 @@
 //	    return err
 //	}
 //
-// # Features
-//
-// The package provides several key features:
+// Features:
 //
 //   - Generic worker pool implementation supporting any data type
 //   - Configurable number of workers running in parallel
@@ -59,7 +85,7 @@
 //   - Context-based cancellation and timeouts
 //   - Optional completion callbacks
 //
-// # Advanced Features
+// Advanced Features:
 //
 // Batching:
 //
@@ -81,7 +107,7 @@
 //	    Options[string]().WithContinueOnError(),
 //	)
 //
-// # Metrics
+// Metrics:
 //
 // The pool automatically tracks standard stats metrics (processed counts, errors, timings).
 // Workers can also record additional custom metrics:
@@ -90,9 +116,11 @@
 //	m.Inc("custom-counter")
 //
 // Access metrics:
-// value := m.Get("custom-counter")
 //
-// Collected statistical metrics including:
+//	metrics := p.Metrics()
+//	value := metrics.Get("custom-counter")
+//
+// Statistical metrics including:
 //
 //   - Number of processed items
 //   - Number of errors
@@ -104,10 +132,11 @@
 //
 // Access stats:
 //
-//	stats := pool.Metrics().Stats()
+//	metrics := p.Metrics()
+//	stats := metrics.GetStats()
 //	fmt.Printf("processed: %d, errors: %d", stats.Processed, stats.Errors)
 //
-// # Data Collection
+// Data Collection:
 //
 // For collecting results from workers, use the Collector:
 //

@@ -1,6 +1,6 @@
 # pool [![Build Status](https://github.com/go-pkgz/pool/workflows/build/badge.svg)](https://github.com/go-pkgz/pool/actions) [![Coverage Status](https://coveralls.io/repos/github/go-pkgz/pool/badge.svg?branch=master)](https://coveralls.io/github/go-pkgz/pool?branch=master) [![godoc](https://godoc.org/github.com/go-pkgz/pool?status.svg)](https://godoc.org/github.com/go-pkgz/pool)
 
-`pool` is a Go package that provides a generic, efficient worker pool implementation for parallel task and data processing. Built for Go 1.21+, it offers a flexible API with features like batching, work distribution strategies, and comprehensive metrics collection.
+`pool` is a Go package that provides a generic, efficient worker pool implementation for parallel task processing. Built for Go 1.21+, it offers a flexible API with features like batching, work distribution strategies, and comprehensive metrics collection.
 
 ## Features
 
@@ -9,7 +9,7 @@
 - Support for both stateless shared workers and per-worker instances
 - Batching capability for processing multiple items at once
 - Customizable work distribution through chunk functions
-- Built-in metrics collection (processing times, counts, custom metrics, etc.)
+- Built-in metrics collection (processing times, counts, etc.)
 - Error handling with continue/stop options
 - Context-based cancellation and timeouts
 - Optional completion callbacks
@@ -69,14 +69,13 @@ func main() {
         log.Printf("some URLs failed: %v", err)
     }
 
-    // print metrics
-    stats := p.Metrics().Stats()
+    // get metrics
+    metrics := p.Metrics()
+    stats := metrics.GetStats()
     fmt.Printf("Processed: %d, Errors: %d, Time taken: %v\n",
         stats.Processed, stats.Errors, stats.TotalTime)
 }
 ```
-
-This example demonstrates how creating a worker function that processes URLs works, how to set up a pool with multiple workers, submit work in a separate goroutine, wait for completion, and collect metrics.
 
 ## Motivation
 
@@ -109,106 +108,61 @@ Common challenges this package addresses:
    - Understanding bottlenecks and performance issues
    - Monitoring system health
 
-While these requirements could be implemented using Go's basic concurrency primitives, doing so properly requires significant effort and careful attention to edge cases. This package provides a high-level, production-ready solution that handles these common needs while remaining flexible enough to adapt to specific use cases.
-
 ## Core Concepts
 
 ### Worker Types
 
-The pool provides a flexible Worker interface that can be implemented in two ways:
+The pool supports three ways to implement and manage workers:
 
-#### 1. Interface Implementation
+1. **Core Interface**:
+   ```go
+   // Worker is the interface that wraps the Do method
+   type Worker[T any] interface {
+       Do(ctx context.Context, v T) error
+   }
+   
+   // WorkerFunc is an adapter to allow using ordinary functions as Workers
+   type WorkerFunc[T any] func(ctx context.Context, v T) error
+   
+   func (f WorkerFunc[T]) Do(ctx context.Context, v T) error { return f(ctx, v) }
+   ```
 
-The core `Worker` interface is simple and generic:
+2. **Stateless Shared Workers**:
+   ```go
+   // single worker instance shared between all goroutines
+   worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
+       // process v
+       return nil
+   })
+   
+   p, _ := pool.New[string](5, worker)
+   ```
+   - One worker instance serves all goroutines
+   - Good for stateless operations
+   - More memory efficient
 
-```go
-type Worker[T any] interface {
-    Do(ctx context.Context, v T) error
-}
-```
-
-You can implement this interface directly for complex workers that need state or additional methods:
-
-```go
-type metricWorker struct {
-    metrics *Metrics
-    client  *http.Client
-}
-
-func (w *metricWorker) Do(ctx context.Context, url string) error {
-    start := time.Now()
-    resp, err := w.client.Get(url)
-    if err != nil {
-        return err
-    }
-    w.metrics.Add("latency", time.Since(start).Milliseconds())
-    return nil
-}
-
-// create pool with the worker
-w := &metricWorker{metrics: newMetrics(), client: &http.Client{}}
-p, _ := pool.New[string](5, w)
-```
-
-#### 2. Function Adapter
-
-For simple workers, you can use the `WorkerFunc` adapter to turn a regular function into a Worker:
-
-```go
-// WorkerFunc adapts a function to the Worker interface
-type WorkerFunc[T any] func(ctx context.Context, v T) error
-
-// implementation of Do simply calls the function
-func (f WorkerFunc[T]) Do(ctx context.Context, v T) error { return f(ctx, v) }
-```
-
-This enables direct use of functions as workers:
-
-```go
-worker := pool.WorkerFunc[string](func(ctx context.Context, url string) error {
-    resp, err := http.Get(url)
-    if err != nil {
-        return fmt.Errorf("failed to fetch %s: %w", url, err)
-    }
-    defer resp.Body.Close()
-    return nil
-})
-
-// create pool with the function worker
-p, _ := pool.New[string](5, worker)
-```
-
-Both approaches can be used with either stateless shared workers or per-worker instances as described below.
-
-#### 3. Stateless Shared Workers
-
-```go
-// stateful worker with connection
-type dbWorker struct {
-    conn *sql.DB
-    processed int
-}
-
-func (w *dbWorker) Do(ctx context.Context, v string) error {
-    w.processed++
-    return w.conn.ExecContext(ctx, "INSERT INTO items (value) VALUES (?)", v)
-}
-
-// create new instance for each goroutine
-maker := func() pool.Worker[string] {
-    w := &dbWorker{
-        conn: openConnection(), // each worker gets own connection
-    }
-    return w
-}
-
-p, _ := pool.NewStateful[string](5, maker)
-```
-
-- Each goroutine gets its own worker instance
-- Good for maintaining state or resources (DB connections, caches) inside the worker
-- No need for mutex as each instance is used by single goroutine
-- More memory usage but better isolation
+3. **Per-Worker Instances**:
+   ```go
+   type dbWorker struct {
+       conn *sql.DB
+       processed int
+   }
+   
+   func (w *dbWorker) Do(ctx context.Context, v string) error {
+       w.processed++
+       return w.conn.ExecContext(ctx, "INSERT INTO items (value) VALUES (?)", v)
+   }
+   
+   // create new instance for each goroutine
+   maker := func() pool.Worker[string] {
+       w := &dbWorker{
+           conn: openConnection(), // each worker gets own connection
+       }
+       return w
+   }
+   
+   p, _ := pool.NewStateful[string](5, maker)
+   ```
 
 ### Batching Processing
 
@@ -227,10 +181,10 @@ worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
 ```
 
 How batching works:
-1. Pool accumulates submitted items internally, until batch size is reached
+1. Pool accumulates submitted items internally until batch size is reached
 2. Full batch is sent to worker as a single channel operation
 3. Worker processes each item in the batch sequentially
-4. The last batch may be smaller if items don't divide evenly
+4. Last batch may be smaller if items don't divide evenly
 
 When to use batching:
 - High-volume processing where channel operations are a bottleneck
@@ -241,18 +195,16 @@ When to use batching:
 Control how work is distributed among workers using chunk functions:
 
 ```go
-opts := pool.Options[string]()
-
 // distribute by first character of string
 p, _ := pool.New[string](3, worker, 
-    opts.WithChunkFn(func(v string) string {
+    pool.Options[string]().WithChunkFn(func(v string) string {
         return v[:1] // same first char goes to same worker
     }),
 )
 
 // distribute by user ID to ensure user's tasks go to same worker
 p, _ := pool.New[Task](3, worker,
-    opts.WithChunkFn(func(t Task) string {
+    pool.Options[Task]().WithChunkFn(func(t Task) string {
         return strconv.Itoa(t.UserID)
     }),
 )
@@ -333,9 +285,6 @@ p, _ := pool.New[string](2, worker,
 
 ### Collecting Results
 
-`Collector` can be used to gather results from workers. Internally, it's a buffered channel that collects results
-from all workers and can be iterated over or collected all at once. 
-
 ```go
 // create a collector for results
 collector := pool.NewCollector[Result](ctx, 10)
@@ -361,167 +310,39 @@ for v, err := range collector.Iter() {
 results, err := collector.All()
 ```
 
-### Worker State Management
-
-```go
-// stateful worker with counter
-type countingWorker struct {
-    count int
-}
-
-// create new worker for each goroutine
-maker := func() pool.Worker[string] {
-    w := &countingWorker{}
-    return pool.WorkerFunc[string](func(ctx context.Context, v string) error {
-        w.count++ // increment counter, safe to use without mutex as each worker has its own instance
-        return nil
-    })
-}
-
-p, _ := pool.NewStateful[string](2, maker)
-```
-
 ### Metrics and Monitoring
 
 ```go
 // create worker with metrics tracking
 worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
-    // track custom metrics only, pool handles standard metrics automatically
     m := metrics.Get(ctx)
     if strings.HasPrefix(v, "important") {
         m.Inc("important-tasks")
     }
-    
-    // process the value
-    if err := process(v); err != nil {
-        return err
-    }
-    return nil
+    return process(v)
 })
 
 // create and run pool
 p, _ := pool.New[string](2, worker)
 p.Go(context.Background())
 
-// process some work using the pool
+// process work
 p.Submit("task1")
 p.Submit("important-task2")
 p.Close(context.Background())
 
-// get structured metrics
-stats := p.Metrics().GetStats()
+// get metrics
+metrics := p.Metrics()
+stats := metrics.GetStats()
 fmt.Printf("Processed: %d\n", stats.Processed)
 fmt.Printf("Errors: %d\n", stats.Errors)
 fmt.Printf("Processing time: %v\n", stats.ProcessingTime)
 fmt.Printf("Wait time: %v\n", stats.WaitTime)
 fmt.Printf("Total time: %v\n", stats.TotalTime)
 
-// get user-defined metrics
-m := p.Metrics()
-fmt.Printf("Important tasks: %d\n", m.Get("important-tasks"))
+// get custom metrics
+fmt.Printf("Important tasks: %d\n", metrics.Get("important-tasks"))
 ```
-
-## Complete Example: Processing Pipeline
-
-Here's a more complex example showing how to create a processing pipeline with multiple stages:
-
-```go
-func Example_chainedCalculation() {
-    // stage 1: calculate fibonacci numbers in parallel
-    type FibResult struct {
-        n   int
-        fib uint64
-    }
-    stage1Collector := pool.NewCollector[FibResult](context.Background(), 10)
-
-    fibWorker := pool.WorkerFunc[int](func(_ context.Context, n int) error {
-        var a, b uint64 = 0, 1
-        for i := 0; i < n; i++ {
-            a, b = b, a+b
-        }
-        stage1Collector.Submit(FibResult{n: n, fib: a})
-        return nil
-    })
-
-    // stage 2: calculate factors for each fibonacci number
-    type FactorsResult struct {
-        n       uint64
-        factors []uint64
-    }
-    stage2Collector := pool.NewCollector[FactorsResult](context.Background(), 10)
-
-    factorsWorker := pool.WorkerFunc[FibResult](func(_ context.Context, res FibResult) error {
-        if res.fib <= 1 {
-            stage2Collector.Submit(FactorsResult{n: res.fib, factors: []uint64{res.fib}})
-            return nil
-        }
-
-        var factors []uint64
-        n := res.fib
-        for i := uint64(2); i*i <= n; i++ {
-            for n%i == 0 {
-                factors = append(factors, i)
-                n /= i
-            }
-        }
-        if n > 1 {
-            factors = append(factors, n)
-        }
-
-        stage2Collector.Submit(FactorsResult{n: res.fib, factors: factors})
-        return nil
-    })
-
-    // create and start both pools
-    pool1, _ := pool.New[int](3, fibWorker)
-    pool1.Go(context.Background())
-
-    pool2, _ := pool.NewStateful[FibResult](2, func() pool.Worker[FibResult] {
-        return factorsWorker
-    })
-    pool2.Go(context.Background())
-
-    // submit numbers to calculate
-    numbers := []int{5, 7, 10}
-    for _, n := range numbers {
-        pool1.Submit(n)
-    }
-
-    // close pools and collectors in order
-    pool1.Close(context.Background())
-    stage1Collector.Close()
-
-    // process stage 1 results in stage 2
-    for fibRes, err := range stage1Collector.Iter() {
-        if err != nil {
-            log.Printf("stage 1 error: %v", err)
-            continue
-        }
-        pool2.Submit(fibRes)
-    }
-
-    pool2.Close(context.Background())
-    stage2Collector.Close()
-
-    // collect and sort final results to ensure deterministic output order
-    results, _ := stage2Collector.All()
-    sort.Slice(results, func(i, j int) bool {
-        return results[i].n < results[j].n
-    })
-
-    // print results in sorted order
-	for _, res := range results {
-        fmt.Printf("number %d has factors %v\n", res.n, res.factors)
-    }
-
-    // Output:
-    // number 5 has factors [5]
-    // number 13 has factors [13]
-    // number 55 has factors [5 11]
-}
-```
-
-For more, see [godoc](https://pkg.go.dev/github.com/go-pkgz/pool#example-package-Basic) examples.
 
 ## Flow Control
 
