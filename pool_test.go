@@ -71,7 +71,7 @@ func TestPool_Batching(t *testing.T) {
 
 	// verify batches are of correct size (except maybe last one)
 	for i, batch := range batches[:len(batches)-1] {
-		require.Equal(t, batchSize, len(batch), "batch %d has wrong size", i)
+		require.Len(t, batch, batchSize, "batch %d has wrong size", i)
 	}
 	assert.LessOrEqual(t, len(batches[len(batches)-1]), batchSize)
 }
@@ -124,7 +124,7 @@ func TestPool_ErrorHandling_StopOnError(t *testing.T) {
 	p.Submit("ok2") // should not be processed
 
 	err = p.Close(context.Background())
-	assert.ErrorIs(t, err, errTest)
+	require.ErrorIs(t, err, errTest)
 	assert.Equal(t, int32(1), processedCount.Load())
 }
 
@@ -150,7 +150,7 @@ func TestPool_ErrorHandling_ContinueOnError(t *testing.T) {
 	p.Submit("ok2")
 
 	err = p.Close(context.Background())
-	assert.ErrorIs(t, err, errTest)
+	require.ErrorIs(t, err, errTest)
 	assert.Equal(t, int32(2), processedCount.Load())
 }
 
@@ -248,7 +248,7 @@ func TestPool_Wait(t *testing.T) {
 			p.Submit(v)
 		}
 		err := p.Close(context.Background())
-		require.NoError(t, err)
+		assert.NoError(t, err)
 	}()
 
 	// wait for completion
@@ -256,7 +256,7 @@ func TestPool_Wait(t *testing.T) {
 
 	// verify all items were processed
 	mu.Lock()
-	require.Equal(t, 3, len(processed))
+	assert.Len(t, processed, 3)
 	for _, v := range []string{"1", "2", "3"} {
 		require.True(t, processed[v], "item %s was not processed", v)
 	}
@@ -280,7 +280,7 @@ func TestPool_Wait_WithError(t *testing.T) {
 		p.Submit("ok")
 		p.Submit("error")
 		err := p.Close(context.Background())
-		require.Error(t, err)
+		assert.Error(t, err)
 	}()
 
 	err = p.Wait(context.Background())

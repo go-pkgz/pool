@@ -38,6 +38,20 @@ linters:
     - gosimple
     - prealloc
     - unused
+    - contextcheck
+    - copyloopvar
+    - decorder
+    - errorlint
+    - exptostd
+    - gochecknoglobals
+    - gofmt
+    - goimports
+    - intrange
+    - mnd
+    - nilerr
+    - predeclared
+    - testifylint
+    - thelper
   fast: false
   disable-all: true
 
@@ -61,5 +75,6 @@ issues:
       text: "Consider pre-allocating"
     - linters:
         - gosec
+        - intrange
       path: _test\.go$
   exclude-use-default: false

@@ -65,7 +65,7 @@ func TestCollector_All(t *testing.T) {
 	c := NewCollector[int](ctx, 5)
 
 	go func() {
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			c.Submit(i)
 		}
 		c.Close()

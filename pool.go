@@ -88,7 +88,7 @@ func New[T any](size int, worker Worker[T], opts ...Option[T]) (*WorkerGroup[T],
 	}
 
 	// initialize worker's channels and batch buffers
-	for id := 0; id < size; id++ {
+	for id := range size {
 		res.workersCh[id] = make(chan []T, res.workerChanSize)
 		if res.batchSize > 1 {
 			res.buf[id] = make([]T, 0, size)
@@ -127,7 +127,7 @@ func NewStateful[T any](size int, maker func() Worker[T], opts ...Option[T]) (*W
 	}
 
 	// initialize worker's channels and batch buffers
-	for id := 0; id < size; id++ {
+	for id := range size {
 		res.workersCh[id] = make(chan []T, res.workerChanSize)
 		if res.batchSize > 1 {
 			res.buf[id] = make([]T, 0, size)
@@ -185,7 +185,7 @@ func (p *WorkerGroup[T]) Go(ctx context.Context) error {
 	p.ctx = egCtx
 
 	// start all goroutines
-	for i := 0; i < p.poolSize; i++ {
+	for i := range p.poolSize {
 		workerCtx := metrics.Make(metrics.WithWorkerID(egCtx, i))
 		p.workerCtxs[i] = workerCtx
 		p.eg.Go(p.workerProc(workerCtx, i, p.workersCh[i]))
@@ -333,7 +333,7 @@ func (p *WorkerGroup[T]) Wait(ctx context.Context) (err error) {
 // Metrics returns combined metrics from all workers
 func (p *WorkerGroup[T]) Metrics() *metrics.Value {
 	values := make([]*metrics.Value, p.poolSize)
-	for i := 0; i < p.poolSize; i++ {
+	for i := range p.poolSize {
 		values[i] = metrics.Get(p.workerCtxs[i])
 	}
 	return metrics.Aggregate(values...)
