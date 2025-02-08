@@ -115,49 +115,100 @@ While these requirements could be implemented using Go's basic concurrency primi
 
 ### Worker Types
 
-The pool supports two types of workers:
+The pool provides a flexible Worker interface that can be implemented in two ways:
 
-1. Stateless Shared Workers:
-   ```go
-   // single worker instance shared between all goroutines
-   worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
-       // process v
-       return nil
-   })
-   
-   p, _ := pool.New[string](5, worker)
-   ```
-   - One worker instance serves all goroutines
-   - Good for stateless operations like HTTP requests, records parsing and transformation, etc.
-   - More memory efficient
+#### 1. Interface Implementation
 
-2. Per-Worker Instances:
-   ```go
-   // stateful worker with connection
-   type dbWorker struct {
-       conn *sql.DB
-       processed int
-   }
-   
-   func (w *dbWorker) Do(ctx context.Context, v string) error {
-       w.processed++
-       return w.conn.ExecContext(ctx, "INSERT INTO items (value) VALUES (?)", v)
-   }
-   
-   // create new instance for each goroutine
-   maker := func() pool.Worker[string] {
-       w := &dbWorker{
-           conn: openConnection(), // each worker gets own connection
-       }
-       return w
-   }
-   
-   p, _ := pool.NewStateful[string](5, maker)
-   ```
-   - Each goroutine gets its own worker instance
-   - Good for maintaining state or resources (DB connections, caches) inside the worker
-   - No need for mutex as each instance is used by single goroutine
-   - More memory usage but better isolation
+The core `Worker` interface is simple and generic:
+
+```go
+type Worker[T any] interface {
+    Do(ctx context.Context, v T) error
+}
+```
+
+You can implement this interface directly for complex workers that need state or additional methods:
+
+```go
+type metricWorker struct {
+    metrics *Metrics
+    client  *http.Client
+}
+
+func (w *metricWorker) Do(ctx context.Context, url string) error {
+    start := time.Now()
+    resp, err := w.client.Get(url)
+    if err != nil {
+        return err
+    }
+    w.metrics.Add("latency", time.Since(start).Milliseconds())
+    return nil
+}
+
+// create pool with the worker
+w := &metricWorker{metrics: newMetrics(), client: &http.Client{}}
+p, _ := pool.New[string](5, w)
+```
+
+#### 2. Function Adapter
+
+For simple workers, you can use the `WorkerFunc` adapter to turn a regular function into a Worker:
+
+```go
+// WorkerFunc adapts a function to the Worker interface
+type WorkerFunc[T any] func(ctx context.Context, v T) error
+
+// implementation of Do simply calls the function
+func (f WorkerFunc[T]) Do(ctx context.Context, v T) error { return f(ctx, v) }
+```
+
+This enables direct use of functions as workers:
+
+```go
+worker := pool.WorkerFunc[string](func(ctx context.Context, url string) error {
+    resp, err := http.Get(url)
+    if err != nil {
+        return fmt.Errorf("failed to fetch %s: %w", url, err)
+    }
+    defer resp.Body.Close()
+    return nil
+})
+
+// create pool with the function worker
+p, _ := pool.New[string](5, worker)
+```
+
+Both approaches can be used with either stateless shared workers or per-worker instances as described below.
+
+#### 3. Stateless Shared Workers
+
+```go
+// stateful worker with connection
+type dbWorker struct {
+    conn *sql.DB
+    processed int
+}
+
+func (w *dbWorker) Do(ctx context.Context, v string) error {
+    w.processed++
+    return w.conn.ExecContext(ctx, "INSERT INTO items (value) VALUES (?)", v)
+}
+
+// create new instance for each goroutine
+maker := func() pool.Worker[string] {
+    w := &dbWorker{
+        conn: openConnection(), // each worker gets own connection
+    }
+    return w
+}
+
+p, _ := pool.NewStateful[string](5, maker)
+```
+
+- Each goroutine gets its own worker instance
+- Good for maintaining state or resources (DB connections, caches) inside the worker
+- No need for mutex as each instance is used by single goroutine
+- More memory usage but better isolation
 
 ### Batching Processing
 
@@ -190,16 +241,18 @@ When to use batching:
 Control how work is distributed among workers using chunk functions:
 
 ```go
+opts := pool.Options[string]()
+
 // distribute by first character of string
 p, _ := pool.New[string](3, worker, 
-    pool.Options[string]().WithChunkFn(func(v string) string {
+    opts.WithChunkFn(func(v string) string {
         return v[:1] // same first char goes to same worker
     }),
 )
 
 // distribute by user ID to ensure user's tasks go to same worker
 p, _ := pool.New[Task](3, worker,
-    pool.Options[Task]().WithChunkFn(func(t Task) string {
+    opts.WithChunkFn(func(t Task) string {
         return strconv.Itoa(t.UserID)
     }),
 )
@@ -280,6 +333,9 @@ p, _ := pool.New[string](2, worker,
 
 ### Collecting Results
 
+`Collector` can be used to gather results from workers. Internally, it's a buffered channel that collects results
+from all workers and can be iterated over or collected all at once. 
+
 ```go
 // create a collector for results
 collector := pool.NewCollector[Result](ctx, 10)
@@ -317,7 +373,7 @@ type countingWorker struct {
 maker := func() pool.Worker[string] {
     w := &countingWorker{}
     return pool.WorkerFunc[string](func(ctx context.Context, v string) error {
-        w.count++
+        w.count++ // increment counter, safe to use without mutex as each worker has its own instance
         return nil
     })
 }
@@ -347,7 +403,7 @@ worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
 p, _ := pool.New[string](2, worker)
 p.Go(context.Background())
 
-// process some work
+// process some work using the pool
 p.Submit("task1")
 p.Submit("important-task2")
 p.Close(context.Background())
@@ -464,6 +520,8 @@ func Example_chainedCalculation() {
     // number 55 has factors [5 11]
 }
 ```
+
+For more, see [godoc](https://pkg.go.dev/github.com/go-pkgz/pool#example-package-Basic) examples.
 
 ## Flow Control
 
