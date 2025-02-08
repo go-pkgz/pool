@@ -448,25 +448,23 @@ func (w *processingWorker) Do(_ context.Context, v string) error {
 
 func Example_workerTypes() {
 	// These two workers are functionally equivalent:
-	// 1. Using Worker interface processingWorker
+	// 1. Implementing Worker interface explicitly
 	// 2. Using WorkerFunc adapter - same thing, just shorter
 	workerFn := WorkerFunc[string](func(_ context.Context, v string) error {
 		fmt.Printf("processed: %s\n", v)
 		return nil
 	})
 
-	// Both can be used the same way with the pool
+	// Run first pool to completion
 	p1, _ := New[string](1, &processingWorker{})
-	p2, _ := New[string](1, workerFn)
-
-	// They behave identically
 	p1.Go(context.Background())
-	p2.Go(context.Background())
-
 	p1.Submit("task1")
-	p2.Submit("task2")
-
 	p1.Close(context.Background())
+
+	// Then run second pool
+	p2, _ := New[string](1, workerFn)
+	p2.Go(context.Background())
+	p2.Submit("task2")
 	p2.Close(context.Background())
 
 	// Output:
