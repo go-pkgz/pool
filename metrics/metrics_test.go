@@ -245,6 +245,7 @@ func TestMetrics_AllTimerTypes(t *testing.T) {
 	newStats := m.workerStats[0]
 	assert.Equal(t, stats, newStats, "unknown timer type should not affect stats")
 }
+
 func TestStats_String(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -306,4 +307,55 @@ func TestStats_String(t *testing.T) {
 			assert.Equal(t, tt.expected, tt.stats.String())
 		})
 	}
+}
+
+func TestMetrics_AddWaitTime(t *testing.T) {
+	t.Run("basic wait time tracking", func(t *testing.T) {
+		m := New(2) // two workers
+
+		// add some wait time to worker 0
+		m.AddWaitTime(0, 100*time.Millisecond)
+		m.AddWaitTime(0, 50*time.Millisecond)
+
+		// add different wait time to worker 1
+		m.AddWaitTime(1, 75*time.Millisecond)
+
+		stats := m.GetStats()
+		assert.Equal(t, 225*time.Millisecond, stats.WaitTime,
+			"total wait time should be sum of all workers' wait times")
+	})
+
+	t.Run("accumulation with existing timers", func(t *testing.T) {
+		m := New(1)
+
+		// start a regular wait timer
+		end := m.StartTimer(0, TimerWait)
+		time.Sleep(10 * time.Millisecond)
+		end()
+
+		// add explicit wait time
+		m.AddWaitTime(0, 20*time.Millisecond)
+
+		stats := m.GetStats()
+		assert.Greater(t, stats.WaitTime, 30*time.Millisecond,
+			"wait time should include both timer and added wait time")
+	})
+
+	t.Run("multiple workers tracking", func(t *testing.T) {
+		m := New(3)
+
+		// simulate different wait patterns for each worker
+		m.AddWaitTime(0, 10*time.Millisecond)
+		m.AddWaitTime(1, 20*time.Millisecond)
+		m.AddWaitTime(2, 30*time.Millisecond)
+
+		// add more wait time to first worker
+		m.AddWaitTime(0, 15*time.Millisecond)
+
+		stats := m.GetStats()
+		assert.Equal(t, 75*time.Millisecond, stats.WaitTime,
+			"total wait time should be sum across all workers")
+		assert.Equal(t, 25*time.Millisecond, m.workerStats[0].WaitTime,
+			"individual worker should track its own wait time")
+	})
 }

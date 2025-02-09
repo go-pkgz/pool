@@ -136,6 +136,11 @@ func (m *Value) StartTimer(wid int, t TimerType) func() {
 	}
 }
 
+// AddWaitTime adds wait time directly to worker stats
+func (m *Value) AddWaitTime(wid int, d time.Duration) {
+	m.workerStats[wid].WaitTime += d
+}
+
 // IncProcessed increments processed count for worker
 func (m *Value) IncProcessed(wid int) {
 	m.workerStats[wid].Processed++

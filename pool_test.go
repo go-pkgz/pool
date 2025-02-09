@@ -586,3 +586,138 @@ func TestPool_FinalizeWorker(t *testing.T) {
 		require.ErrorIs(t, err, context.Canceled)
 	})
 }
+
+func TestPool_WaitTimeAccuracy(t *testing.T) {
+	t.Run("measures idle time between tasks", func(t *testing.T) {
+		worker := WorkerFunc[int](func(ctx context.Context, v int) error {
+			time.Sleep(10 * time.Millisecond) // fixed processing time
+			return nil
+		})
+
+		p := New[int](1, worker)
+		require.NoError(t, p.Go(context.Background()))
+
+		// submit first task
+		p.Submit(1)
+		waitPeriod := 50 * time.Millisecond
+		time.Sleep(waitPeriod) // deliberate wait
+		p.Submit(2)
+
+		require.NoError(t, p.Close(context.Background()))
+		stats := p.Metrics().GetStats()
+
+		// allow for some variance in timing
+		minExpectedWait := 35 * time.Millisecond // 70% of wait period
+		assert.Greater(t, stats.WaitTime, minExpectedWait,
+			"wait time (%v) should be greater than %v", stats.WaitTime, minExpectedWait)
+	})
+
+	t.Run("measures wait across batches", func(t *testing.T) {
+		worker := WorkerFunc[int](func(ctx context.Context, v int) error {
+			time.Sleep(5 * time.Millisecond)
+			return nil
+		})
+
+		p := New[int](1, worker).WithBatchSize(2)
+		require.NoError(t, p.Go(context.Background()))
+
+		// submit first batch
+		p.Submit(1)
+		p.Submit(2)
+		waitPeriod := 40 * time.Millisecond // increased wait period
+		time.Sleep(waitPeriod)              // wait between batches
+		p.Submit(3)
+		p.Submit(4)
+
+		require.NoError(t, p.Close(context.Background()))
+		stats := p.Metrics().GetStats()
+
+		minExpectedWait := 15 * time.Millisecond // about 37.5% of wait period
+		assert.Greater(t, stats.WaitTime, minExpectedWait,
+			"wait time (%v) should be greater than %v", stats.WaitTime, minExpectedWait)
+	})
+}
+
+func TestPool_InitializationTime(t *testing.T) {
+	t.Run("captures initialization in maker function", func(t *testing.T) {
+		initDuration := 25 * time.Millisecond
+
+		p := NewStateful[int](1, func() Worker[int] {
+			time.Sleep(initDuration) // simulate expensive initialization
+			return WorkerFunc[int](func(ctx context.Context, v int) error {
+				return nil
+			})
+		})
+
+		require.NoError(t, p.Go(context.Background()))
+		p.Submit(1)
+		require.NoError(t, p.Close(context.Background()))
+
+		stats := p.Metrics().GetStats()
+		minExpectedInit := 20 * time.Millisecond // 80% of init duration
+		assert.Greater(t, stats.InitTime, minExpectedInit,
+			"init time (%v) should capture worker maker execution time (expected > %v)",
+			stats.InitTime, minExpectedInit)
+	})
+
+	t.Run("minimal init time for stateless worker", func(t *testing.T) {
+		worker := WorkerFunc[int](func(ctx context.Context, v int) error {
+			return nil
+		})
+
+		p := New[int](1, worker)
+		require.NoError(t, p.Go(context.Background()))
+		p.Submit(1)
+		require.NoError(t, p.Close(context.Background()))
+
+		stats := p.Metrics().GetStats()
+		assert.Less(t, stats.InitTime, 5*time.Millisecond,
+			"stateless worker should have minimal init time")
+	})
+}
+
+func TestPool_TimingUnderLoad(t *testing.T) {
+	const (
+		workers        = 3
+		tasks          = 9
+		processingTime = 10 * time.Millisecond
+	)
+
+	processed := make(chan struct{}, tasks)
+	worker := WorkerFunc[int](func(ctx context.Context, v int) error {
+		time.Sleep(processingTime)
+		processed <- struct{}{}
+		return nil
+	})
+
+	p := New[int](workers, worker)
+	require.NoError(t, p.Go(context.Background()))
+
+	// submit all tasks quickly
+	for i := 0; i < tasks; i++ {
+		p.Submit(i)
+	}
+
+	// wait for all tasks to complete
+	for i := 0; i < tasks; i++ {
+		select {
+		case <-processed:
+		case <-time.After(time.Second):
+			t.Fatal("timeout waiting for tasks to complete")
+		}
+	}
+
+	require.NoError(t, p.Close(context.Background()))
+	stats := p.Metrics().GetStats()
+
+	// With 9 tasks split among 3 workers, each worker should process ~3 tasks
+	// Total processing time should be ~3 * processingTime
+	expectedProcessingPerWorker := 3 * processingTime
+	avgProcessingTime := stats.ProcessingTime / time.Duration(workers)
+
+	assert.InDelta(t, expectedProcessingPerWorker.Milliseconds(),
+		avgProcessingTime.Milliseconds(),
+		15, // allow 15ms variance
+		"processing time should scale with worker count, expected ~%v per worker, got %v",
+		expectedProcessingPerWorker, avgProcessingTime)
+}

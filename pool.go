@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"math/rand"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -223,23 +224,24 @@ func (p *WorkerGroup[T]) Go(ctx context.Context) error {
 }
 
 // workerProc is a worker goroutine function, reads from the input channel and processes records
+// update workerProc in pool.go
+
 func (p *WorkerGroup[T]) workerProc(wCtx context.Context, id int, inCh chan []T) func() error {
 	return func() error {
 		var lastErr error
 		var totalErrs int
+		lastActivity := time.Now()
 
 		m := metrics.Get(wCtx)
 
-		// get worker instance based on mode
+		// initialize worker
 		var worker Worker[T]
+		initEndTmr := m.StartTimer(id, metrics.TimerInit)
 		if p.worker != nil {
 			worker = p.worker // use shared worker for stateless mode
 		} else {
 			worker = p.workerMaker() // create new worker instance for stateful mode
 		}
-
-		// track initialization time
-		initEndTmr := m.StartTimer(id, metrics.TimerInit)
 		initEndTmr()
 
 		for {
@@ -258,8 +260,9 @@ func (p *WorkerGroup[T]) workerProc(wCtx context.Context, id int, inCh chan []T)
 					return nil
 				}
 
-				// track wait time - from when item was received till processing starts
-				waitEndTmr := m.StartTimer(id, metrics.TimerWait)
+				// track wait time - from last activity till now
+				waitTime := time.Since(lastActivity)
+				m.AddWaitTime(id, waitTime)
 
 				// read from the input slice
 				for _, v := range vv {
@@ -285,7 +288,7 @@ func (p *WorkerGroup[T]) workerProc(wCtx context.Context, id int, inCh chan []T)
 					procEndTmr()
 					m.IncProcessed(id)
 				}
-				waitEndTmr()
+				lastActivity = time.Now()
 
 			case <-p.ctx.Done(): // parent context, passed by caller
 				return p.ctx.Err()
