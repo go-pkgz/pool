@@ -79,14 +79,14 @@ func (s Stats) String() string {
 	}
 	if s.Errors > 0 {
 		if s.ErrorRate > 0 {
-			metrics = append(metrics, fmt.Sprintf("errors:%d (%.1f%%)", s.Errors, s.ErrorRate*100))
+			metrics = append(metrics, fmt.Sprintf("errors:%d (%.1f%%)", s.Errors, s.ErrorRate*100)) //nolint:mnd // 100 is not magic number
 		} else {
 			metrics = append(metrics, fmt.Sprintf("errors:%d", s.Errors))
 		}
 	}
 	if s.Dropped > 0 {
 		if s.DroppedRate > 0 {
-			metrics = append(metrics, fmt.Sprintf("dropped:%d (%.1f%%)", s.Dropped, s.DroppedRate*100))
+			metrics = append(metrics, fmt.Sprintf("dropped:%d (%.1f%%)", s.Dropped, s.DroppedRate*100)) //nolint:mnd // 100 is not magic
 		} else {
 			metrics = append(metrics, fmt.Sprintf("dropped:%d", s.Dropped))
 		}
@@ -106,7 +106,7 @@ func (s Stats) String() string {
 	if s.TotalTime > 0 {
 		metrics = append(metrics, fmt.Sprintf("total:%v", s.TotalTime.Round(time.Millisecond)))
 		if s.Utilization > 0 {
-			metrics = append(metrics, fmt.Sprintf("utilization:%.1f%%", s.Utilization*100))
+			metrics = append(metrics, fmt.Sprintf("utilization:%.1f%%", s.Utilization*100)) //nolint:mnd // 100 is not magic number
 		}
 	}
 
