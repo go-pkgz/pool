@@ -6,17 +6,17 @@ This directory contains examples demonstrating various aspects of the [go-pkgz/p
 
 ## Available Examples
 
-### [tokenizer_stateless](./tokenizer_stateless)
-Implements the same text processing but using stateless workers with shared collector. Demonstrates:
-- Simple worker functions
-- Shared result collection
-- Batch processing
-
 ### [tokenizer_stateful](./tokenizer_stateful)
 Shows how to use stateful workers where each worker maintains its own independent state (word frequency counters). Demonstrates:
 - Worker state isolation
 - Result collection through completion callbacks
 - Performance statistics tracking
+
+### [tokenizer_stateless](./tokenizer_stateless)
+Implements the same text processing but using stateless workers with shared collector. Demonstrates:
+- Simple worker functions
+- Shared result collection
+- Batch processing
 
 ### [parallel_files](./parallel_files)
 Shows how to process multiple files in parallel using chunks. Demonstrates:
@@ -28,10 +28,10 @@ Shows how to process multiple files in parallel using chunks. Demonstrates:
 
 Each example can be run from its directory:
 ```bash
-cd ../tokenizer_stateless
+cd tokenizer_stateful
 go run main.go -file input.txt
 
-cd tokenizer_stateful
+cd ../tokenizer_stateless
 go run main.go -file input.txt
 
 cd ../parallel_files
