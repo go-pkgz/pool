@@ -367,7 +367,6 @@ p := pool.New[string](2, worker).
 	WithBatchSize(10).             // process items in batches
     WithWorkerChanSize(5).         // set worker channel buffer size
     WithChunkFn(chunkFn).          // control work distribution
-    WithContext(ctx).              // set custom context
     WithContinueOnError().         // don't stop on errors
     WithCompleteFn(completeFn)     // called when worker finishes
 ```
@@ -376,7 +375,6 @@ Available options:
 - `WithBatchSize(size int)` - enables batch processing, accumulating items before sending to workers
 - `WithWorkerChanSize(size int)` - sets buffer size for worker channels
 - `WithChunkFn(fn func(T) string)` - controls work distribution by key
-- `WithContext(ctx context.Context)` - sets custom context for cancellation
 - `WithContinueOnError()` - continues processing on errors
 - `WithCompleteFn(fn func(ctx, id, worker))` - called on worker completion
 

@@ -74,7 +74,6 @@ func New[T any](size int, worker Worker[T]) *WorkerGroup[T] {
 		worker:         worker,
 		batchSize:      1,
 		workerChanSize: 1,
-		ctx:            context.Background(),
 	}
 	res.err.ch = make(chan struct{})
 
@@ -153,13 +152,6 @@ func (p *WorkerGroup[T]) WithBatchSize(size int) *WorkerGroup[T] {
 // Default: none
 func (p *WorkerGroup[T]) WithChunkFn(fn func(T) string) *WorkerGroup[T] {
 	p.chunkFn = fn
-	return p
-}
-
-// WithContext sets the context for the pool. This is used to control the lifecycle of the pool.
-// Default: context.Background()
-func (p *WorkerGroup[T]) WithContext(ctx context.Context) *WorkerGroup[T] {
-	p.ctx = ctx
 	return p
 }
 
