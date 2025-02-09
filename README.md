@@ -36,13 +36,7 @@ func main() {
     })
 	
     // create a pool with 5 workers 
-    opts := pool.Options[string]()
-    p, err := pool.New[string](5, worker,
-        opts.WithContinueOnError(), // don't stop on errors
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
+    p := pool.New[string](5, worker).WithContinueOnError(), // don't stop on errors
 
     // start the pool
     if err := p.Go(context.Background()); err != nil {
@@ -135,7 +129,7 @@ The pool supports three ways to implement and manage workers:
        return nil
    })
    
-   p, _ := pool.New[string](5, worker)
+   p := pool.New[string](5, worker)
    ```
    - One worker instance serves all goroutines
    - Good for stateless operations
@@ -161,7 +155,7 @@ The pool supports three ways to implement and manage workers:
        return w
    }
    
-   p, _ := pool.NewStateful[string](5, maker)
+   p := pool.NewStateful[string](5, maker)
    ```
 
 ### Batching Processing
@@ -170,8 +164,7 @@ Batching reduces channel communication overhead by processing multiple items at 
 
 ```go
 // process items in batches of 10
-opts := pool.Options[string]()
-p, _ := pool.New[string](2, worker, opts.WithBatchSize(10))
+p := pool.New[string](2, worker).WithBatchSize(10)
 
 // worker receives items one by one
 worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
@@ -196,18 +189,14 @@ Control how work is distributed among workers using chunk functions:
 
 ```go
 // distribute by first character of string
-p, _ := pool.New[string](3, worker, 
-    pool.Options[string]().WithChunkFn(func(v string) string {
-        return v[:1] // same first char goes to same worker
-    }),
-)
+p := pool.New[string](3, worker).WithChunkFn(func(v string) string {
+	return v[:1] // same first char goes to same worker
+})
 
 // distribute by user ID to ensure user's tasks go to same worker
-p, _ := pool.New[Task](3, worker,
-    pool.Options[Task]().WithChunkFn(func(t Task) string {
-        return strconv.Itoa(t.UserID)
-    }),
-)
+p := pool.New[Task](3, worker).WithChunkFn(func(t Task) string {
+	return strconv.Itoa(t.UserID)
+})
 ```
 
 How distribution works:
@@ -245,10 +234,7 @@ func main() {
     })
 
     // create a pool with 2 workers
-    p, err := pool.New[string](2, worker)
-    if err != nil {
-        log.Fatal(err)
-    }
+    p := pool.New[string](2, worker)
 
     // start the pool
     if err := p.Go(context.Background()); err != nil {
@@ -278,9 +264,7 @@ worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
 })
 
 // continue processing on errors
-p, _ := pool.New[string](2, worker,
-    pool.Options[string]().WithContinueOnError(),
-)
+p := pool.New[string](2, worker).WithContinueOnError()
 ```
 
 ### Collecting Results
@@ -296,7 +280,7 @@ worker := pool.WorkerFunc[Input](func(ctx context.Context, v Input) error {
     return nil
 })
 
-p, _ := pool.New[Input](2, worker)
+p := pool.New[Input](2, worker)
 
 // get results through iteration
 for v, err := range collector.Iter() {
@@ -323,7 +307,7 @@ worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
 })
 
 // create and run pool
-p, _ := pool.New[string](2, worker)
+p := pool.New[string](2, worker)
 p.Go(context.Background())
 
 // process work
@@ -374,20 +358,18 @@ if err := p.Wait(ctx); err != nil {
 }
 ```
 
-## Options
+## Optional parameters
 
-Configure pool behavior using options:
+Configure pool behavior using With methods:
 
 ```go
-opts := pool.Options[string]()
-p, err := pool.New[string](2, worker,
-    opts.WithBatchSize(10),             // process items in batches
-    opts.WithWorkerChanSize(5),         // set worker channel buffer size
-    opts.WithChunkFn(chunkFn),          // control work distribution
-    opts.WithContext(ctx),              // set custom context
-    opts.WithContinueOnError(),         // don't stop on errors
-    opts.WithCompleteFn(completeFn),    // called when worker finishes
-)
+p := pool.New[string](2, worker).   
+	WithBatchSize(10).             // process items in batches
+    WithWorkerChanSize(5).         // set worker channel buffer size
+    WithChunkFn(chunkFn).          // control work distribution
+    WithContext(ctx).              // set custom context
+    WithContinueOnError().         // don't stop on errors
+    WithCompleteFn(completeFn)     // called when worker finishes
 ```
 
 Available options:

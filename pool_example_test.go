@@ -21,7 +21,7 @@ func Example_basic() {
 		return nil
 	})
 
-	p, _ := New[int](2, worker)
+	p := New[int](2, worker)
 	if err := p.Go(context.Background()); err != nil {
 		panic(err) // handle error, don't panic in real code
 	}
@@ -57,10 +57,7 @@ func Example_withBatching() {
 		return nil
 	})
 
-	opts := Options[int]()
-	p, _ := New[int](2, worker,
-		opts.WithBatchSize(2), // process items in batches of 2
-	)
+	p := New[int](2, worker).WithBatchSize(2)
 	p.Go(context.Background())
 
 	// submit items - they will be processed in batches
@@ -94,14 +91,12 @@ func Example_withRouting() {
 	})
 
 	// create pool with chunk function that routes based on even/odd
-	opts := Options[int]()
-	p, _ := New[int](2, worker,
-		opts.WithChunkFn(func(v int) string {
-			if v%2 == 0 {
-				return "even"
-			}
-			return "odd"
-		}),
+	p := New[int](2, worker).WithChunkFn(func(v int) string {
+		if v%2 == 0 {
+			return "even"
+		}
+		return "odd"
+	},
 	)
 	p.Go(context.Background())
 
@@ -141,10 +136,7 @@ func Example_withError() {
 		return nil
 	})
 
-	opts := Options[int]()
-	p, _ := New[int](1, worker,
-		opts.WithContinueOnError(), // don't stop on errors
-	)
+	p := New[int](1, worker).WithContinueOnError() // don't stop on errors
 	p.Go(context.Background())
 
 	p.Submit(1)
@@ -181,7 +173,7 @@ func Example_withContext() {
 		return ctx.Err()
 	})
 
-	p, _ := New[int](1, worker)
+	p := New[int](1, worker)
 	p.Go(ctx)
 	p.Submit(1)
 
@@ -214,7 +206,7 @@ func Example_withCollector() {
 	})
 
 	// create and start pool
-	p, _ := New[int](2, worker)
+	p := New[int](2, worker)
 	p.Go(context.Background())
 
 	// submit items asynchronously
@@ -251,7 +243,7 @@ func Example_withCollectorIterator() {
 		return nil
 	})
 
-	p, _ := New[int](2, worker)
+	p := New[int](2, worker)
 	p.Go(context.Background())
 
 	// submit items asynchronously
@@ -312,7 +304,7 @@ func Example_fibCalculator() {
 	})
 
 	// create pool with 3 workers
-	p, _ := New[int](3, worker)
+	p := New[int](3, worker)
 	p.Go(context.Background())
 
 	// submit numbers to calculate asynchronously
@@ -391,10 +383,10 @@ func Example_chainedCalculation() {
 	})
 
 	// create and start both pools
-	pool1, _ := New[int](3, fibWorker)
+	pool1 := New[int](3, fibWorker)
 	pool1.Go(context.Background())
 
-	pool2, _ := NewStateful[FibResult](2, func() Worker[FibResult] {
+	pool2 := NewStateful[FibResult](2, func() Worker[FibResult] {
 		return factorsWorker
 	})
 	pool2.Go(context.Background())
@@ -456,13 +448,13 @@ func Example_workerTypes() {
 	})
 
 	// Run first pool to completion
-	p1, _ := New[string](1, &processingWorker{})
+	p1 := New[string](1, &processingWorker{})
 	p1.Go(context.Background())
 	p1.Submit("task1")
 	p1.Close(context.Background())
 
 	// Then run second pool
-	p2, _ := New[string](1, workerFn)
+	p2 := New[string](1, workerFn)
 	p2.Go(context.Background())
 	p2.Submit("task2")
 	p2.Close(context.Background())

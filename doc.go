@@ -43,11 +43,7 @@
 //	    return nil
 //	})
 //
-//	p, err := pool.New[string](2, worker)
-//	if err != nil {
-//	    return err
-//	}
-//
+//	p := pool.New[string](2, worker)
 //	if err := p.Go(context.Background()); err != nil {
 //	    return err
 //	}
@@ -67,11 +63,7 @@
 //	        conn: openConnection(),
 //	    }
 //	}
-//
-//	p, err := pool.NewStateful[string](2, maker)
-//	if err != nil {
-//	    return err
-//	}
+//	p := pool.NewStateful[string](2, maker)
 //
 // Features:
 //
@@ -89,23 +81,17 @@
 //
 // Batching:
 //
-//	p, _ := New[string](2, worker,
-//	    Options[string]().WithBatchSize(10),
-//	)
+//	p := New[string](2, worker).WithBatchSize(10)
 //
 // Chunked distribution:
 //
-//	p, _ := New[string](2, worker,
-//	    Options[string]().WithChunkFn(func(v string) string {
-//	        return v // items with same hash go to same worker
-//	    }),
-//	)
+//	p := New[string](2, worker).WithChunkFn(func(v string) string {
+//	    return v // items with same hash go to same worker
+//	})
 //
 // Error handling:
 //
-//	p, _ := New[string](2, worker,
-//	    Options[string]().WithContinueOnError(),
-//	)
+//	p := New[string](2, worker).WithContinueOnError()
 //
 // Metrics:
 //

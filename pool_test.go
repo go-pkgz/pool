@@ -17,64 +17,6 @@ import (
 	"github.com/go-pkgz/pool/metrics"
 )
 
-func TestPool_Creation(t *testing.T) {
-	t.Run("invalid options should fail pool creation", func(t *testing.T) {
-		worker := WorkerFunc[string](func(ctx context.Context, v string) error { return nil })
-		opts := Options[string]()
-
-		tests := []struct {
-			name    string
-			fn      func() (*WorkerGroup[string], error)
-			wantErr string
-		}{
-			{
-				name: "invalid batch size",
-				fn: func() (*WorkerGroup[string], error) {
-					return New[string](2, worker, opts.WithBatchSize(0))
-				},
-				wantErr: "batch size must be greater than 0",
-			},
-			{
-				name: "invalid channel size",
-				fn: func() (*WorkerGroup[string], error) {
-					return New[string](2, worker, opts.WithWorkerChanSize(0))
-				},
-				wantErr: "worker channel size must be greater than 0",
-			},
-			{
-				name: "nil worker",
-				fn: func() (*WorkerGroup[string], error) {
-					return New[string](2, nil)
-				},
-				wantErr: "worker cannot be nil",
-			},
-		}
-
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				p, err := tt.fn()
-				require.Error(t, err)
-				require.Contains(t, err.Error(), tt.wantErr)
-				require.Nil(t, p)
-			})
-		}
-	})
-
-	t.Run("pool with invalid options should not activate", func(t *testing.T) {
-		worker := WorkerFunc[string](func(ctx context.Context, v string) error { return nil })
-
-		p, err := New[string](2, worker, Options[string]().WithBatchSize(0))
-		require.Error(t, err)
-		require.Nil(t, p)
-
-		// if we somehow got a pool, it shouldn't activate
-		if p != nil {
-			err = p.Go(context.Background())
-			require.Error(t, err)
-		}
-	})
-}
-
 func TestPool_Basic(t *testing.T) {
 	var processed []string
 	var mu sync.Mutex
@@ -86,8 +28,7 @@ func TestPool_Basic(t *testing.T) {
 		return nil
 	})
 
-	p, err := New[string](2, worker)
-	require.NoError(t, err)
+	p := New[string](2, worker)
 	require.NoError(t, p.Go(context.Background()))
 
 	inputs := []string{"1", "2", "3", "4", "5"}
@@ -116,9 +57,7 @@ func TestPool_Batching(t *testing.T) {
 		return nil
 	})
 
-	opts := Options[string]()
-	p, err := New[string](1, worker, opts.WithBatchSize(batchSize))
-	require.NoError(t, err)
+	p := New[string](1, worker).WithBatchSize(batchSize)
 	require.NoError(t, p.Go(context.Background()))
 
 	for i := 0; i < 5; i++ {
@@ -143,11 +82,7 @@ func TestPool_ChunkDistribution(t *testing.T) {
 		return nil
 	})
 
-	opts := Options[string]()
-	p, err := New[string](2, worker,
-		opts.WithChunkFn(func(v string) string { return v }),
-	)
-	require.NoError(t, err)
+	p := New[string](2, worker).WithChunkFn(func(v string) string { return v })
 	require.NoError(t, p.Go(context.Background()))
 
 	// submit same value multiple times, should always go to same worker
@@ -173,15 +108,14 @@ func TestPool_ErrorHandling_StopOnError(t *testing.T) {
 		return nil
 	})
 
-	p, err := New[string](1, worker)
-	require.NoError(t, err)
+	p := New[string](1, worker)
 	require.NoError(t, p.Go(context.Background()))
 
 	p.Submit("ok1")
 	p.Submit("error")
 	p.Submit("ok2") // should not be processed
 
-	err = p.Close(context.Background())
+	err := p.Close(context.Background())
 	require.ErrorIs(t, err, errTest)
 	assert.Equal(t, int32(1), processedCount.Load())
 }
@@ -198,16 +132,14 @@ func TestPool_ErrorHandling_ContinueOnError(t *testing.T) {
 		return nil
 	})
 
-	opts := Options[string]()
-	p, err := New[string](1, worker, opts.WithContinueOnError())
-	require.NoError(t, err)
+	p := New[string](1, worker).WithContinueOnError()
 	require.NoError(t, p.Go(context.Background()))
 
 	p.Submit("ok1")
 	p.Submit("error")
 	p.Submit("ok2")
 
-	err = p.Close(context.Background())
+	err := p.Close(context.Background())
 	require.ErrorIs(t, err, errTest)
 	assert.Equal(t, int32(2), processedCount.Load())
 }
@@ -222,16 +154,14 @@ func TestPool_ContextCancellation(t *testing.T) {
 		}
 	})
 
-	p, err := New[string](1, worker)
-	require.NoError(t, err)
-
+	p := New[string](1, worker)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
 	require.NoError(t, p.Go(ctx))
 	p.Submit("test")
 
-	err = p.Close(context.Background())
+	err := p.Close(context.Background())
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
@@ -247,9 +177,7 @@ func TestPool_WorkerCompletion(t *testing.T) {
 		return nil
 	}
 
-	opts := Options[string]()
-	p, err := New[string](2, worker, opts.WithCompleteFn(completeFn))
-	require.NoError(t, err)
+	p := New[string](2, worker).WithCompleteFn(completeFn)
 	require.NoError(t, p.Go(context.Background()))
 	require.NoError(t, p.Close(context.Background()))
 
@@ -271,9 +199,7 @@ func TestPool_StatefulWorker(t *testing.T) {
 		})
 	}
 
-	opts := Options[string]()
-	p, err := NewStateful[string](2, workerMaker, opts.WithWorkerChanSize(5))
-	require.NoError(t, err)
+	p := NewStateful[string](2, workerMaker).WithWorkerChanSize(5)
 	require.NoError(t, p.Go(context.Background()))
 
 	// submit more items to increase chance of concurrent processing
@@ -295,8 +221,7 @@ func TestPool_Wait(t *testing.T) {
 		return nil
 	})
 
-	p, err := New[string](2, worker)
-	require.NoError(t, err)
+	p := New[string](2, worker)
 	require.NoError(t, p.Go(context.Background()))
 
 	// submit in a separate goroutine since we'll use Wait
@@ -330,8 +255,7 @@ func TestPool_Wait_WithError(t *testing.T) {
 		return nil
 	})
 
-	p, err := New[string](1, worker)
-	require.NoError(t, err)
+	p := New[string](1, worker)
 	require.NoError(t, p.Go(context.Background()))
 
 	go func() {
@@ -341,7 +265,7 @@ func TestPool_Wait_WithError(t *testing.T) {
 		assert.Error(t, err)
 	}()
 
-	err = p.Wait(context.Background())
+	err := p.Wait(context.Background())
 	require.Error(t, err)
 	require.ErrorIs(t, err, errTest)
 }
@@ -354,8 +278,7 @@ func TestPool_Distribution(t *testing.T) {
 			return nil
 		})
 
-		p, err := New[int](2, worker)
-		require.NoError(t, err)
+		p := New[int](2, worker)
 		require.NoError(t, p.Go(context.Background()))
 
 		const n = 10000
@@ -377,13 +300,10 @@ func TestPool_Distribution(t *testing.T) {
 			return nil
 		})
 
-		opts := Options[int]()
-		p, err := New[int](2, worker,
-			opts.WithChunkFn(func(v int) string {
-				return fmt.Sprintf("key-%d", v%10) // 10 different keys
-			}),
+		p := New[int](2, worker).WithChunkFn(func(v int) string {
+			return fmt.Sprintf("key-%d", v%10) // 10 different keys
+		},
 		)
-		require.NoError(t, err)
 		require.NoError(t, p.Go(context.Background()))
 
 		const n = 10000
@@ -408,8 +328,7 @@ func TestPool_Metrics(t *testing.T) {
 			return nil
 		})
 
-		p, err := New[int](2, worker)
-		require.NoError(t, err)
+		p := New[int](2, worker)
 		require.NoError(t, p.Go(context.Background()))
 
 		for i := 0; i < 10; i++ {
@@ -435,10 +354,7 @@ func TestPool_Metrics(t *testing.T) {
 			return nil
 		})
 
-		p, err := New[int](2, worker,
-			Options[int]().WithContinueOnError(),
-		)
-		require.NoError(t, err)
+		p := New[int](2, worker).WithContinueOnError()
 		require.NoError(t, p.Go(context.Background()))
 
 		for i := 0; i < 10; i++ {
@@ -463,10 +379,7 @@ func TestPool_Metrics(t *testing.T) {
 			return nil
 		})
 
-		p, err := New[int](2, worker,
-			Options[int]().WithBatchSize(3),
-		)
-		require.NoError(t, err)
+		p := New[int](2, worker).WithBatchSize(3)
 		require.NoError(t, p.Go(context.Background()))
 
 		n := 10
@@ -493,8 +406,7 @@ func TestPool_Metrics(t *testing.T) {
 			return nil
 		})
 
-		p, err := New[int](2, worker)
-		require.NoError(t, err)
+		p := New[int](2, worker)
 		require.NoError(t, p.Go(context.Background()))
 
 		p.Submit(1)
@@ -521,8 +433,7 @@ func TestPool_Metrics(t *testing.T) {
 			return nil
 		})
 
-		p, err := New[int](2, worker, Options[int]().WithContinueOnError())
-		require.NoError(t, err)
+		p := New[int](2, worker).WithContinueOnError()
 		require.NoError(t, p.Go(context.Background()))
 
 		// submit enough items to ensure both workers get some
@@ -546,8 +457,7 @@ func TestPool_MetricsString(t *testing.T) {
 		return nil
 	})
 
-	p, err := New[int](2, worker)
-	require.NoError(t, err)
+	p := New[int](2, worker)
 	require.NoError(t, p.Go(context.Background()))
 
 	p.Submit(1)
@@ -578,15 +488,14 @@ func TestPool_FinalizeWorker(t *testing.T) {
 			return nil
 		})
 
-		p, err := New[string](1, worker)
-		require.NoError(t, err)
+		p := New[string](1, worker)
 		require.NoError(t, p.Go(context.Background()))
 
 		// fill batch buffer with items including error
 		p.buf[0] = []string{"ok1", "error", "ok2"}
 
 		// should process until error
-		err = p.finalizeWorker(context.Background(), 0, worker)
+		err := p.finalizeWorker(context.Background(), 0, worker)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "test error")
 		assert.Equal(t, []string{"ok1"}, processed)
@@ -602,17 +511,14 @@ func TestPool_FinalizeWorker(t *testing.T) {
 			return nil
 		})
 
-		p, err := New[string](1, worker,
-			Options[string]().WithContinueOnError(),
-		)
-		require.NoError(t, err)
+		p := New[string](1, worker).WithContinueOnError()
 		require.NoError(t, p.Go(context.Background()))
 
 		// fill batch buffer with items including error
 		p.buf[0] = []string{"ok1", "error", "ok2"}
 
 		// should process all items
-		err = p.finalizeWorker(context.Background(), 0, worker)
+		err := p.finalizeWorker(context.Background(), 0, worker)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"ok1", "ok2"}, processed)
 	})
@@ -623,15 +529,12 @@ func TestPool_FinalizeWorker(t *testing.T) {
 		})
 
 		completeFnError := fmt.Errorf("complete error")
-		p, err := New[string](1, worker,
-			Options[string]().WithCompleteFn(func(context.Context, int, Worker[string]) error {
-				return completeFnError
-			}),
-		)
-		require.NoError(t, err)
+		p := New[string](1, worker).WithCompleteFn(func(context.Context, int, Worker[string]) error {
+			return completeFnError
+		})
 		require.NoError(t, p.Go(context.Background()))
 
-		err = p.finalizeWorker(context.Background(), 0, worker)
+		err := p.finalizeWorker(context.Background(), 0, worker)
 		require.Error(t, err)
 		require.ErrorIs(t, err, completeFnError)
 	})
@@ -642,19 +545,16 @@ func TestPool_FinalizeWorker(t *testing.T) {
 			return fmt.Errorf("batch error")
 		})
 
-		p, err := New[string](1, worker,
-			Options[string]().WithCompleteFn(func(context.Context, int, Worker[string]) error {
-				completeFnCalled = true
-				return fmt.Errorf("complete error")
-			}),
-		)
-		require.NoError(t, err)
+		p := New[string](1, worker).WithCompleteFn(func(context.Context, int, Worker[string]) error {
+			completeFnCalled = true
+			return fmt.Errorf("complete error")
+		})
 		require.NoError(t, p.Go(context.Background()))
 
 		// fill batch buffer with an item
 		p.buf[0] = []string{"task"}
 
-		err = p.finalizeWorker(context.Background(), 0, worker)
+		err := p.finalizeWorker(context.Background(), 0, worker)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "batch error")
 		assert.False(t, completeFnCalled, "completeFn should not be called after batch error")
@@ -672,8 +572,7 @@ func TestPool_FinalizeWorker(t *testing.T) {
 		})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		p, err := New[string](1, worker)
-		require.NoError(t, err)
+		p := New[string](1, worker)
 		require.NoError(t, p.Go(ctx))
 
 		// fill batch buffer
@@ -682,7 +581,7 @@ func TestPool_FinalizeWorker(t *testing.T) {
 		// cancel context before finalization
 		cancel()
 
-		err = p.finalizeWorker(ctx, 0, worker)
+		err := p.finalizeWorker(ctx, 0, worker)
 		require.Error(t, err)
 		require.ErrorIs(t, err, context.Canceled)
 	})

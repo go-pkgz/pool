@@ -62,12 +62,9 @@ type Send[T any] func(val T) error
 
 // New creates a worker pool with a shared, stateless worker.
 // Size defines the number of goroutines (workers) processing requests.
-func New[T any](size int, worker Worker[T], opts ...Option[T]) (*WorkerGroup[T], error) {
+func New[T any](size int, worker Worker[T]) *WorkerGroup[T] {
 	if size < 1 {
 		size = 1
-	}
-	if worker == nil {
-		return nil, fmt.Errorf("worker cannot be nil")
 	}
 
 	res := &WorkerGroup[T]{
@@ -81,13 +78,6 @@ func New[T any](size int, worker Worker[T], opts ...Option[T]) (*WorkerGroup[T],
 	}
 	res.err.ch = make(chan struct{})
 
-	// apply all options
-	for _, opt := range opts {
-		if err := opt(res); err != nil {
-			return nil, fmt.Errorf("failed to apply option: %w", err)
-		}
-	}
-
 	// initialize worker's channels and batch buffers
 	for id := range size {
 		res.workersCh[id] = make(chan []T, res.workerChanSize)
@@ -96,18 +86,15 @@ func New[T any](size int, worker Worker[T], opts ...Option[T]) (*WorkerGroup[T],
 		}
 	}
 
-	return res, nil
+	return res
 }
 
 // NewStateful creates a worker pool with a separate worker instance for each goroutine.
 // Size defines number of goroutines (workers) processing requests.
 // Maker function is called for each goroutine to create a new worker instance.
-func NewStateful[T any](size int, maker func() Worker[T], opts ...Option[T]) (*WorkerGroup[T], error) {
+func NewStateful[T any](size int, maker func() Worker[T]) *WorkerGroup[T] {
 	if size < 1 {
 		size = 1
-	}
-	if maker == nil {
-		return nil, fmt.Errorf("worker maker cannot be nil")
 	}
 
 	res := &WorkerGroup[T]{
@@ -121,13 +108,6 @@ func NewStateful[T any](size int, maker func() Worker[T], opts ...Option[T]) (*W
 	}
 	res.err.ch = make(chan struct{})
 
-	// apply all options
-	for _, opt := range opts {
-		if err := opt(res); err != nil {
-			return nil, fmt.Errorf("failed to apply option: %w", err)
-		}
-	}
-
 	// initialize worker's channels and batch buffers
 	for id := range size {
 		res.workersCh[id] = make(chan []T, res.workerChanSize)
@@ -135,8 +115,59 @@ func NewStateful[T any](size int, maker func() Worker[T], opts ...Option[T]) (*W
 			res.buf[id] = make([]T, 0, size)
 		}
 	}
+	return res
+}
 
-	return res, nil
+// WithWorkerChanSize sets the size of the worker channel. Each worker has its own channel
+// to receive values from the pool and process them.
+// Default: 1
+func (p *WorkerGroup[T]) WithWorkerChanSize(size int) *WorkerGroup[T] {
+	p.workerChanSize = size
+	if size < 1 {
+		p.workerChanSize = 1
+	}
+	return p
+}
+
+// WithCompleteFn sets the complete function, called when the pool is complete.
+// This is useful for cleanup or finalization tasks.
+// Default: none
+func (p *WorkerGroup[T]) WithCompleteFn(fn CompleteFn[T]) *WorkerGroup[T] {
+	p.completeFn = fn
+	return p
+}
+
+// WithBatchSize sets the size of the batches. This is used to send multiple values
+// to workers in a single batch. This can be useful to reduce contention on worker channels.
+// Default: 1
+func (p *WorkerGroup[T]) WithBatchSize(size int) *WorkerGroup[T] {
+	p.batchSize = size
+	if size < 1 {
+		p.batchSize = 1
+	}
+	return p
+}
+
+// WithChunkFn sets the chunk function, used to distribute records to workers.
+// This is useful to distribute records to workers predictably.
+// Default: none
+func (p *WorkerGroup[T]) WithChunkFn(fn func(T) string) *WorkerGroup[T] {
+	p.chunkFn = fn
+	return p
+}
+
+// WithContext sets the context for the pool. This is used to control the lifecycle of the pool.
+// Default: context.Background()
+func (p *WorkerGroup[T]) WithContext(ctx context.Context) *WorkerGroup[T] {
+	p.ctx = ctx
+	return p
+}
+
+// WithContinueOnError sets whether the pool should continue on error.
+// Default: false
+func (p *WorkerGroup[T]) WithContinueOnError() *WorkerGroup[T] {
+	p.continueOnError = true
+	return p
 }
 
 // Submit record to pool, can be blocked if worker channels are full.
