@@ -60,6 +60,7 @@ func main() {
 			}
 			collector.Submit(word)
 		}
+		time.Sleep(10 * time.Millisecond) // simulate slow processing time
 		return nil
 	})
 
@@ -120,7 +121,8 @@ func main() {
 	fmt.Printf("Unique words: %d\n", len(wordCounts))
 	fmt.Printf("Errors: %d\n", stats.Errors)
 	fmt.Printf("Processing time: %v\n", stats.ProcessingTime)
-	fmt.Printf("Total time: %v\n", stats.TotalTime)
+	fmt.Printf("Total time: %v\n\n", stats.TotalTime)
+	fmt.Printf("all stats: %s\n", stats)
 
 	// print top N most common tokens
 	const topN = 10

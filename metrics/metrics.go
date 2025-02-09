@@ -40,30 +40,56 @@ type Value struct {
 	userData map[string]int
 }
 
-// Stats represents worker-specific metrics
+// Stats represents worker-specific metrics with derived values
 type Stats struct {
-	Processed      int
-	Errors         int
-	Dropped        int
+	// raw counters
+	Processed int
+	Errors    int
+	Dropped   int
+
+	// timing
 	ProcessingTime time.Duration
 	WaitTime       time.Duration
 	InitTime       time.Duration
 	WrapTime       time.Duration
 	TotalTime      time.Duration
+
+	// derived stats, calculated on GetStats
+	RatePerSec  float64       // items processed per second
+	AvgLatency  time.Duration // average processing time per item
+	ErrorRate   float64       // portion of errors
+	DroppedRate float64       // portion of dropped items
+	Utilization float64       // portion of time spent processing vs waiting
 }
 
+// String returns stats info formatted as string
 // String returns stats info formatted as string
 func (s Stats) String() string {
 	var metrics []string
 
 	if s.Processed > 0 {
 		metrics = append(metrics, fmt.Sprintf("processed:%d", s.Processed))
+		// only add rate and latency if they are non-zero
+		if s.RatePerSec > 0 {
+			metrics = append(metrics, fmt.Sprintf("rate:%.1f/s", s.RatePerSec))
+		}
+		if s.AvgLatency > 0 {
+			metrics = append(metrics, fmt.Sprintf("avg_latency:%v", s.AvgLatency.Round(time.Millisecond)))
+		}
 	}
 	if s.Errors > 0 {
-		metrics = append(metrics, fmt.Sprintf("errors:%d", s.Errors))
+		if s.ErrorRate > 0 {
+			metrics = append(metrics, fmt.Sprintf("errors:%d (%.1f%%)", s.Errors, s.ErrorRate*100))
+		} else {
+			metrics = append(metrics, fmt.Sprintf("errors:%d", s.Errors))
+		}
 	}
 	if s.Dropped > 0 {
-		metrics = append(metrics, fmt.Sprintf("dropped:%d", s.Dropped))
+		if s.DroppedRate > 0 {
+			metrics = append(metrics, fmt.Sprintf("dropped:%d (%.1f%%)", s.Dropped, s.DroppedRate*100))
+		} else {
+			metrics = append(metrics, fmt.Sprintf("dropped:%d", s.Dropped))
+		}
 	}
 	if s.ProcessingTime > 0 {
 		metrics = append(metrics, fmt.Sprintf("proc:%v", s.ProcessingTime.Round(time.Millisecond)))
@@ -79,6 +105,9 @@ func (s Stats) String() string {
 	}
 	if s.TotalTime > 0 {
 		metrics = append(metrics, fmt.Sprintf("total:%v", s.TotalTime.Round(time.Millisecond)))
+		if s.Utilization > 0 {
+			metrics = append(metrics, fmt.Sprintf("utilization:%.1f%%", s.Utilization*100))
+		}
 	}
 
 	if len(metrics) > 0 {
@@ -169,6 +198,24 @@ func (m *Value) GetStats() Stats {
 		result.WrapTime += m.workerStats[i].WrapTime
 	}
 	result.TotalTime = time.Since(m.startTime)
+
+	// calculate derived stats
+	if result.TotalTime > 0 {
+		result.RatePerSec = float64(result.Processed) / result.TotalTime.Seconds()
+	}
+	if result.Processed > 0 {
+		result.AvgLatency = result.ProcessingTime / time.Duration(result.Processed)
+	}
+	totalAttempted := result.Processed + result.Errors + result.Dropped
+	if totalAttempted > 0 {
+		result.ErrorRate = float64(result.Errors) / float64(totalAttempted)
+		result.DroppedRate = float64(result.Dropped) / float64(totalAttempted)
+	}
+	totalWorkTime := result.ProcessingTime + result.WaitTime
+	if totalWorkTime > 0 {
+		result.Utilization = float64(result.ProcessingTime) / float64(totalWorkTime)
+	}
+
 	return result
 }
 

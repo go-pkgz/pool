@@ -300,6 +300,21 @@ func TestStats_String(t *testing.T) {
 			},
 			expected: "[processed:10, proc:1s, total:10s]",
 		},
+		{
+			name: "with derived stats",
+			stats: Stats{
+				Processed:      100,
+				Errors:         10,
+				ProcessingTime: time.Second,
+				WaitTime:       time.Second,
+				TotalTime:      2 * time.Second,
+				RatePerSec:     50.0,
+				AvgLatency:     10 * time.Millisecond,
+				ErrorRate:      0.1,
+				Utilization:    0.5,
+			},
+			expected: "[processed:100, rate:50.0/s, avg_latency:10ms, errors:10 (10.0%), proc:1s, wait:1s, total:2s, utilization:50.0%]",
+		},
 	}
 
 	for _, tt := range tests {
@@ -357,5 +372,62 @@ func TestMetrics_AddWaitTime(t *testing.T) {
 			"total wait time should be sum across all workers")
 		assert.Equal(t, 25*time.Millisecond, m.workerStats[0].WaitTime,
 			"individual worker should track its own wait time")
+	})
+}
+
+func TestStats_DerivedValues(t *testing.T) {
+	t.Run("derived stats calculation", func(t *testing.T) {
+		m := New(1)
+		w := m.workerStats[0]
+		w.Processed = 100
+		w.Errors = 10
+		w.Dropped = 5
+		w.ProcessingTime = 2 * time.Second
+		w.WaitTime = 1 * time.Second
+		m.workerStats[0] = w
+		m.startTime = time.Now().Add(-4 * time.Second) // simulate 4 seconds total time
+
+		stats := m.GetStats()
+
+		assert.InDelta(t, 25.0, stats.RatePerSec, 0.1, "should calculate rate per second")
+		assert.Equal(t, 20*time.Millisecond, stats.AvgLatency, "should calculate average latency")
+		assert.InDelta(t, 0.087, stats.ErrorRate, 0.01, "should calculate error rate")
+		assert.InDelta(t, 0.043, stats.DroppedRate, 0.01, "should calculate dropped rate")
+		assert.InDelta(t, 0.67, stats.Utilization, 0.01, "should calculate utilization")
+	})
+
+	t.Run("string format with derived stats", func(t *testing.T) {
+		stats := Stats{
+			Processed:      100,
+			Errors:         10,
+			Dropped:        5,
+			ProcessingTime: 2 * time.Second,
+			WaitTime:       1 * time.Second,
+			TotalTime:      4 * time.Second,
+			RatePerSec:     25.0,
+			AvgLatency:     20 * time.Millisecond,
+			ErrorRate:      0.087,
+			DroppedRate:    0.043,
+			Utilization:    0.67,
+		}
+
+		str := stats.String()
+		t.Log("Stats string:", str)
+		assert.Contains(t, str, "rate:25.0/s")
+		assert.Contains(t, str, "avg_latency:20ms")
+		assert.Contains(t, str, "errors:10 (8.7%)")
+		assert.Contains(t, str, "dropped:5 (4.3%)")
+		assert.Contains(t, str, "utilization:67.0%")
+	})
+
+	t.Run("handles zero values", func(t *testing.T) {
+		m := New(1)
+		stats := m.GetStats()
+
+		assert.Zero(t, stats.RatePerSec)
+		assert.Zero(t, stats.AvgLatency)
+		assert.Zero(t, stats.ErrorRate)
+		assert.Zero(t, stats.DroppedRate)
+		assert.Zero(t, stats.Utilization)
 	})
 }
