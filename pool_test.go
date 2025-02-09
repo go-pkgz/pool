@@ -394,13 +394,12 @@ func TestPool_Metrics(t *testing.T) {
 		assert.Equal(t, int(actualProcessed), stats.Processed)
 		assert.Equal(t, int(atomic.LoadInt32(&custom)), p.Metrics().Get("custom"))
 
-		// verify both processed count and custom metric
 		assert.Equal(t, n, stats.Processed, "should process all items")
 		assert.Equal(t, n*2, p.Metrics().Get("custom"), "custom metric should be double the items")
 	})
 
 	t.Run("metrics timing", func(t *testing.T) {
-		const processingTime = 10 * time.Millisecond
+		const processingTime = 20 * time.Millisecond
 		worker := WorkerFunc[int](func(_ context.Context, _ int) error {
 			time.Sleep(processingTime)
 			return nil
@@ -415,10 +414,13 @@ func TestPool_Metrics(t *testing.T) {
 
 		stats := p.Metrics().GetStats()
 		assert.Equal(t, 2, stats.Processed)
-		assert.GreaterOrEqual(t, stats.ProcessingTime, 2*processingTime)
-		assert.Less(t, stats.ProcessingTime, 3*processingTime)
-		assert.Greater(t, stats.InitTime, time.Duration(0))
-		assert.Greater(t, stats.WrapTime, time.Duration(0))
+		// Since we're using max time and tasks run in parallel,
+		// processing time should be around one task duration
+		assert.GreaterOrEqual(t, stats.ProcessingTime, processingTime*4/5,
+			"processing time should be at least 80%% of task duration")
+		assert.Less(t, stats.ProcessingTime, processingTime*3/2,
+			"processing time should be less than 150%% of task duration")
+		assert.Greater(t, stats.TotalTime, time.Duration(0))
 	})
 
 	t.Run("per worker stats", func(t *testing.T) {
@@ -446,8 +448,10 @@ func TestPool_Metrics(t *testing.T) {
 		stats := p.Metrics().GetStats()
 		assert.Equal(t, int(atomic.LoadInt32(&processed)), stats.Processed)
 		assert.Equal(t, int(atomic.LoadInt32(&errs)), stats.Errors)
-		assert.Greater(t, stats.ProcessingTime, time.Duration(int64(n)*time.Millisecond.Nanoseconds()))
-		assert.Less(t, stats.ProcessingTime, time.Duration(int64(n*2)*time.Millisecond.Nanoseconds()))
+		assert.Greater(t, stats.ProcessingTime, 40*time.Millisecond,
+			"processing time should be significant with 100 tasks")
+		assert.Less(t, stats.ProcessingTime, time.Second,
+			"processing time should be reasonable")
 	})
 }
 

@@ -42,32 +42,37 @@ func TestMetrics_UserDefined(t *testing.T) {
 }
 
 func TestMetrics_WorkerStats(t *testing.T) {
-	m := New(2) // create metrics for 2 workers
-
 	t.Run("worker timers", func(t *testing.T) {
+		m := New(2) // create metrics for 2 workers
+
 		// worker 1 operations
 		end := m.StartTimer(0, TimerProc)
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 		end()
 
 		end = m.StartTimer(0, TimerWait)
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 		end()
 
 		// worker 2 operations
 		end = m.StartTimer(1, TimerProc)
-		time.Sleep(15 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 		end()
 
 		stats := m.GetStats()
-		assert.Greater(t, stats.ProcessingTime, 25*time.Millisecond)
-		assert.Greater(t, stats.WaitTime, 10*time.Millisecond)
-		assert.Greater(t, stats.TotalTime, stats.WaitTime)
-		assert.Greater(t, stats.TotalTime, stats.ProcessingTime)
+		assert.GreaterOrEqual(t, stats.ProcessingTime.Milliseconds(), int64(20),
+			"processing time should be at least 20ms")
+		assert.GreaterOrEqual(t, stats.WaitTime.Milliseconds(), int64(20),
+			"wait time should be at least 20ms")
+		assert.Greater(t, stats.TotalTime, stats.WaitTime,
+			"total time should be greater than wait time")
+		assert.Greater(t, stats.TotalTime, stats.ProcessingTime,
+			"total time should be greater than processing time")
 	})
 
 	t.Run("worker counters", func(t *testing.T) {
 		// worker 1 increments
+		m := New(2)
 		m.IncProcessed(0)
 		m.IncProcessed(0)
 		m.IncErrors(0)
@@ -430,4 +435,40 @@ func TestStats_DerivedValues(t *testing.T) {
 		assert.Zero(t, stats.DroppedRate)
 		assert.Zero(t, stats.Utilization)
 	})
+}
+
+func TestMetrics_ParallelProcessing(t *testing.T) {
+	m := New(2) // two workers
+
+	// simulate two workers processing in parallel
+	// worker 1: processes for 100ms
+	m.workerStats[0].ProcessingTime = 100 * time.Millisecond
+	m.workerStats[0].Processed = 50
+
+	// worker 2: processes for 150ms
+	m.workerStats[1].ProcessingTime = 150 * time.Millisecond
+	m.workerStats[1].Processed = 75
+
+	// set start time to simulate 200ms total elapsed time
+	m.startTime = time.Now().Add(-200 * time.Millisecond)
+
+	stats := m.GetStats()
+
+	// Processing time should be max of workers, not sum
+	assert.Equal(t, 150*time.Millisecond, stats.ProcessingTime,
+		"processing time should be max across workers")
+
+	// Total time should be elapsed wall time
+	assert.InDelta(t, 200, stats.TotalTime.Milliseconds(), 50,
+		"total time should be actual elapsed time")
+
+	// Rate should be total processed divided by total time
+	expectedRate := float64(stats.Processed) / stats.TotalTime.Seconds()
+	assert.InDelta(t, expectedRate, stats.RatePerSec, 1,
+		"rate should be based on total processed items and elapsed time")
+
+	// Average latency should use max processing time
+	expectedLatency := stats.ProcessingTime / time.Duration(stats.Processed)
+	assert.Equal(t, expectedLatency, stats.AvgLatency,
+		"average latency should be based on max processing time")
 }
