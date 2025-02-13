@@ -491,12 +491,12 @@ func Example_middleware() {
 			return WorkerFunc[string](func(ctx context.Context, v string) error {
 				var lastErr error
 				for i := 0; i < attempts; i++ {
-					if err := next.Do(ctx, v); err == nil {
+					var err error
+					if err = next.Do(ctx, v); err == nil {
 						return nil
-					} else {
-						lastErr = err
-						fmt.Printf("attempt %d failed: %v\n", i+1, err)
 					}
+					lastErr = err
+					fmt.Printf("attempt %d failed: %v\n", i+1, err)
 				}
 				return fmt.Errorf("failed after %d attempts: %w", attempts, lastErr)
 			})

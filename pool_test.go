@@ -887,11 +887,12 @@ func TestMiddleware_Practical(t *testing.T) {
 				return WorkerFunc[string](func(ctx context.Context, v string) error {
 					var lastErr error
 					for i := 0; i < maxAttempts; i++ {
-						if err := next.Do(ctx, v); err == nil {
+						var err error
+						if err = next.Do(ctx, v); err == nil {
 							return nil
-						} else {
-							lastErr = err
 						}
+						lastErr = err
+
 						// wait before retry
 						select {
 						case <-ctx.Done():

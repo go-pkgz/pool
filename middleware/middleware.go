@@ -25,19 +25,19 @@ func Retry[T any](maxAttempts int, baseDelay time.Duration) pool.Middleware[T] {
 	return func(next pool.Worker[T]) pool.Worker[T] {
 		return pool.WorkerFunc[T](func(ctx context.Context, v T) error {
 			var lastErr error
-			for attempt := 0; attempt < maxAttempts; attempt++ {
-				if err := next.Do(ctx, v); err == nil {
+			for attempt := range maxAttempts {
+				var err error
+				if err = next.Do(ctx, v); err == nil {
 					return nil
-				} else {
-					lastErr = err
 				}
+				lastErr = err
 
 				// don't sleep after last attempt
 				if attempt < maxAttempts-1 {
 					// exponential backoff with jitter
-					delay := baseDelay * time.Duration(1<<uint(attempt))
+					delay := baseDelay * time.Duration(1<<uint(attempt)) //nolint:gosec // won't overflow, not that many attempts
 					// add up to 20% jitter
-					jitter := time.Duration(float64(delay) * 0.2 * rand.Float64())
+					jitter := time.Duration(float64(delay) * 0.2 * rand.Float64()) //nolint:gosec // not for security
 					delay += jitter
 
 					select {
