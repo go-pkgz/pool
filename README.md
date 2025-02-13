@@ -13,6 +13,8 @@
 - Error handling with continue/stop options
 - Context-based cancellation and timeouts
 - Optional completion callbacks
+- Extensible middleware system for custom functionality
+- Built-in middlewares for common tasks
 - No external dependencies except for the testing framework
 
 ## Quick Start
