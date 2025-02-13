@@ -376,3 +376,42 @@ func (p *WorkerGroup[T]) Wait(ctx context.Context) (err error) {
 func (p *WorkerGroup[T]) Metrics() *metrics.Value {
 	return p.metrics
 }
+
+// Middleware wraps worker and adds functionality
+type Middleware[T any] func(Worker[T]) Worker[T]
+
+// Use applies middlewares to the worker group's worker. Middlewares are applied
+// in the same order as they are provided, matching the HTTP middleware pattern in Go.
+// The first middleware is the outermost wrapper, and the last middleware is the
+// innermost wrapper closest to the original worker.
+func (p *WorkerGroup[T]) Use(middlewares ...Middleware[T]) *WorkerGroup[T] {
+	if len(middlewares) == 0 {
+		return p
+	}
+
+	// if we have a worker maker (stateful), wrap it
+	if p.workerMaker != nil {
+		originalMaker := p.workerMaker
+		p.workerMaker = func() Worker[T] {
+			worker := originalMaker()
+			// apply middlewares in order from last to first
+			// this makes first middleware outermost
+			wrapped := worker
+			for i := len(middlewares) - 1; i >= 0; i-- {
+				prev := wrapped
+				wrapped = middlewares[i](prev)
+			}
+			return wrapped
+		}
+		return p
+	}
+
+	// for stateless worker, just wrap it directly
+	wrapped := p.worker
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		prev := wrapped
+		wrapped = middlewares[i](prev)
+	}
+	p.worker = wrapped
+	return p
+}

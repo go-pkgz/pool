@@ -145,4 +145,31 @@
 // Or by collecting all at once:
 //
 //	results, err := collector.All()
+//
+// Middleware Support:
+//
+// The pool supports middleware pattern similar to HTTP middleware in Go. Middleware can be used
+// to add functionality like retries, timeouts, metrics, or error handling:
+//
+//	// retry middleware
+//	retryMiddleware := func(next Worker[string]) Worker[string] {
+//	    return WorkerFunc[string](func(ctx context.Context, v string) error {
+//	        var lastErr error
+//	        for i := 0; i < 3; i++ {
+//	            if err := next.Do(ctx, v); err == nil {
+//	                return nil
+//	            } else {
+//	                lastErr = err
+//	            }
+//	            time.Sleep(time.Second * time.Duration(i))
+//	        }
+//	        return fmt.Errorf("failed after 3 attempts: %w", lastErr)
+//	    })
+//	}
+//
+//	p := New[string](2, worker).Use(retryMiddleware)
+//
+// Multiple middleware can be chained, and they execute in the same order as provided:
+//
+//	p.Use(logging, metrics, retry)  // executes: logging -> metrics -> retry -> worker
 package pool
