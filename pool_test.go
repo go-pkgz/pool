@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -742,4 +743,199 @@ func TestPool_TimingUnderLoad(t *testing.T) {
 
 	t.Logf("Processed %d tasks with %d workers in %v (processing time %v)",
 		stats.Processed, workers, stats.TotalTime, stats.ProcessingTime)
+}
+
+func TestMiddleware_Basic(t *testing.T) {
+	var processed atomic.Int32
+
+	// create base worker
+	worker := WorkerFunc[string](func(_ context.Context, v string) error {
+		processed.Add(1)
+		return nil
+	})
+
+	// middleware to count calls
+	var middlewareCalls atomic.Int32
+	countMiddleware := func(next Worker[string]) Worker[string] {
+		return WorkerFunc[string](func(ctx context.Context, v string) error {
+			middlewareCalls.Add(1)
+			return next.Do(ctx, v)
+		})
+	}
+
+	p := New[string](1, worker).Use(countMiddleware)
+	require.NoError(t, p.Go(context.Background()))
+
+	p.Submit("test1")
+	p.Submit("test2")
+	require.NoError(t, p.Close(context.Background()))
+
+	assert.Equal(t, int32(2), processed.Load(), "base worker should process all items")
+	assert.Equal(t, int32(2), middlewareCalls.Load(), "middleware should be called for all items")
+}
+
+func TestMiddleware_ExecutionOrder(t *testing.T) {
+	var order strings.Builder
+	var mu sync.Mutex
+
+	addToOrder := func(s string) {
+		mu.Lock()
+		order.WriteString(s)
+		mu.Unlock()
+	}
+
+	// base worker
+	worker := WorkerFunc[string](func(_ context.Context, v string) error {
+		addToOrder("worker->")
+		return nil
+	})
+
+	// create middlewares that log their execution order
+	middleware1 := func(next Worker[string]) Worker[string] {
+		return WorkerFunc[string](func(ctx context.Context, v string) error {
+			addToOrder("m1_before->")
+			err := next.Do(ctx, v)
+			addToOrder("m1_after->")
+			return err
+		})
+	}
+
+	middleware2 := func(next Worker[string]) Worker[string] {
+		return WorkerFunc[string](func(ctx context.Context, v string) error {
+			addToOrder("m2_before->")
+			err := next.Do(ctx, v)
+			addToOrder("m2_after->")
+			return err
+		})
+	}
+
+	middleware3 := func(next Worker[string]) Worker[string] {
+		return WorkerFunc[string](func(ctx context.Context, v string) error {
+			addToOrder("m3_before->")
+			err := next.Do(ctx, v)
+			addToOrder("m3_after->")
+			return err
+		})
+	}
+
+	// apply middlewares: middleware1, middleware2, middleware3
+	p := New[string](1, worker).Use(middleware1, middleware2, middleware3)
+	require.NoError(t, p.Go(context.Background()))
+
+	p.Submit("test")
+	require.NoError(t, p.Close(context.Background()))
+
+	// expect order similar to http middleware: last added = outermost wrapper
+	// first added (m1) is closest to worker, last added (m3) is outermost
+	expected := "m1_before->m2_before->m3_before->worker->m3_after->m2_after->m1_after->"
+	assert.Equal(t, expected, order.String(), "middleware execution order should match HTTP middleware pattern")
+}
+
+func TestMiddleware_ErrorHandling(t *testing.T) {
+	errTest := errors.New("test error")
+	var processed atomic.Int32
+
+	// worker that fails
+	worker := WorkerFunc[string](func(_ context.Context, v string) error {
+		if v == "error" {
+			return errTest
+		}
+		processed.Add(1)
+		return nil
+	})
+
+	// middleware that logs errors
+	var errCount atomic.Int32
+	errorMiddleware := func(next Worker[string]) Worker[string] {
+		return WorkerFunc[string](func(ctx context.Context, v string) error {
+			err := next.Do(ctx, v)
+			if err != nil {
+				errCount.Add(1)
+			}
+			return err
+		})
+	}
+
+	p := New[string](1, worker).Use(errorMiddleware)
+	require.NoError(t, p.Go(context.Background()))
+
+	p.Submit("ok")
+	p.Submit("error")
+	err := p.Close(context.Background())
+	require.Error(t, err)
+	require.ErrorIs(t, err, errTest)
+
+	assert.Equal(t, int32(1), processed.Load(), "should process non-error item")
+	assert.Equal(t, int32(1), errCount.Load(), "should count one error")
+}
+
+func TestMiddleware_Practical(t *testing.T) {
+	t.Run("retry middleware", func(t *testing.T) {
+		var attempts atomic.Int32
+
+		// worker that fails first time
+		worker := WorkerFunc[string](func(_ context.Context, v string) error {
+			if attempts.Add(1) == 1 {
+				return errors.New("temporary error")
+			}
+			return nil
+		})
+
+		// retry middleware
+		retryMiddleware := func(maxAttempts int) Middleware[string] {
+			return func(next Worker[string]) Worker[string] {
+				return WorkerFunc[string](func(ctx context.Context, v string) error {
+					var lastErr error
+					for i := 0; i < maxAttempts; i++ {
+						if err := next.Do(ctx, v); err == nil {
+							return nil
+						} else {
+							lastErr = err
+						}
+						// wait before retry
+						select {
+						case <-ctx.Done():
+							return ctx.Err()
+						case <-time.After(time.Millisecond):
+						}
+					}
+					return lastErr
+				})
+			}
+		}
+
+		p := New[string](1, worker).Use(retryMiddleware(3))
+		require.NoError(t, p.Go(context.Background()))
+
+		p.Submit("test")
+		require.NoError(t, p.Close(context.Background()))
+
+		assert.Equal(t, int32(2), attempts.Load(), "should succeed on second attempt")
+	})
+
+	t.Run("timing middleware", func(t *testing.T) {
+		worker := WorkerFunc[string](func(_ context.Context, v string) error {
+			time.Sleep(time.Millisecond)
+			return nil
+		})
+
+		var totalTime int64
+		timingMiddleware := func(next Worker[string]) Worker[string] {
+			return WorkerFunc[string](func(ctx context.Context, v string) error {
+				start := time.Now()
+				err := next.Do(ctx, v)
+				atomic.AddInt64(&totalTime, time.Since(start).Microseconds())
+				return err
+			})
+		}
+
+		p := New[string](1, worker).Use(timingMiddleware)
+		require.NoError(t, p.Go(context.Background()))
+
+		p.Submit("test")
+		require.NoError(t, p.Close(context.Background()))
+
+		assert.Greater(t, atomic.LoadInt64(&totalTime), int64(1000),
+			"should measure time greater than 1ms")
+	})
 }

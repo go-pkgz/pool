@@ -217,6 +217,51 @@ When to use custom distribution:
 - Ensure exclusive access to resources
 - Process data consistently
 
+## Middleware Support
+
+The package supports middleware pattern similar to HTTP middleware in Go. Middleware can be used to add cross-cutting concerns like:
+- Retries with backoff
+- Timeouts
+- Panic recovery
+- Metrics and logging
+- Error handling
+
+Built-in middleware:
+```go
+// Add retry with exponential backoff
+p.Use(middleware.Retry[string](3, time.Second))
+
+// Add timeout per operation
+p.Use(middleware.Timeout[string](5 * time.Second))
+
+// Add panic recovery
+p.Use(middleware.Recovery[string](func(p interface{}) {
+    log.Printf("recovered from panic: %v", p)
+}))
+
+// Add validation before processing
+p.Use(middleware.Validate([string]validator))
+```
+
+Custom middleware:
+```go
+logging := func(next pool.Worker[string]) pool.Worker[string] {
+    return pool.WorkerFunc[string](func(ctx context.Context, v string) error {
+        log.Printf("processing: %v", v)
+        err := next.Do(ctx, v)
+        log.Printf("completed: %v, err: %v", v, err)
+        return err
+    })
+}
+
+p.Use(logging)
+```
+
+Multiple middleware execute in the same order as provided:
+```go
+p.Use(logging, metrics, retry)  // order: logging -> metrics -> retry -> worker
+```
+
 ## Install and update
 
 ```bash

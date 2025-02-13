@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -462,4 +463,63 @@ func Example_workerTypes() {
 	// Output:
 	// processed: task1
 	// processed: task2
+}
+
+func Example_middleware() {
+	// Create a worker that sometimes fails
+	worker := WorkerFunc[string](func(_ context.Context, v string) error {
+		if v == "fail" {
+			return errors.New("simulated failure")
+		}
+		fmt.Printf("processed: %s\n", v)
+		return nil
+	})
+
+	// Create logging middleware
+	logging := func(next Worker[string]) Worker[string] {
+		return WorkerFunc[string](func(ctx context.Context, v string) error {
+			fmt.Printf("starting: %s\n", v)
+			err := next.Do(ctx, v)
+			fmt.Printf("completed: %s, err: %v\n", v, err)
+			return err
+		})
+	}
+
+	// Create retry middleware
+	retry := func(attempts int) Middleware[string] {
+		return func(next Worker[string]) Worker[string] {
+			return WorkerFunc[string](func(ctx context.Context, v string) error {
+				var lastErr error
+				for i := 0; i < attempts; i++ {
+					if err := next.Do(ctx, v); err == nil {
+						return nil
+					} else {
+						lastErr = err
+						fmt.Printf("attempt %d failed: %v\n", i+1, err)
+					}
+				}
+				return fmt.Errorf("failed after %d attempts: %w", attempts, lastErr)
+			})
+		}
+	}
+
+	// Create pool with both middleware - retry first since we want logging to be outermost
+	p := New[string](1, worker).Use(retry(2), logging)
+	p.Go(context.Background())
+
+	// Process items
+	p.Submit("ok")   // should succeed first time
+	p.Submit("fail") // should fail after retries
+	p.Close(context.Background())
+
+	// Output:
+	// starting: ok
+	// processed: ok
+	// completed: ok, err: <nil>
+	// starting: fail
+	// completed: fail, err: simulated failure
+	// attempt 1 failed: simulated failure
+	// starting: fail
+	// completed: fail, err: simulated failure
+	// attempt 2 failed: simulated failure
 }
