@@ -150,78 +150,117 @@ func TestPoolPerf(t *testing.T) {
 }
 
 func BenchmarkPoolCompare(b *testing.B) {
-	iterations := 5000
-	workers := 16
-	n := 5000
-
 	ctx := context.Background()
-	worker := WorkerFunc[int](func(context.Context, int) error {
-		benchTask(n)
-		return nil
-	})
+	iterations := 10000
+	workers := 8
+	n := 1000
 
-	b.Run("pool with chan=100", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			p := New[int](workers, worker).WithWorkerChanSize(100)
-			p.Go(ctx)
-
-			go func() {
-				for j := range iterations {
-					p.Submit(j)
-				}
-				p.Close(ctx)
-			}()
-			p.Wait(ctx)
-		}
-	})
-
-	b.Run("pool-chunked", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			p := New[int](workers, worker).WithWorkerChanSize(100).WithChunkFn(func(v int) string {
-				return strconv.Itoa(v % (v + 1)) // distribute by modulo
-			})
-			p.Go(ctx)
-
-			go func() {
-				for j := range iterations {
-					p.Submit(j)
-				}
-				p.Close(ctx)
-			}()
-			p.Wait(ctx)
-		}
-	})
-
-	b.Run("pool-batched", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			p := New[int](workers, worker).WithWorkerChanSize(100).WithBatchSize(100)
-			p.Go(ctx)
-
-			go func() {
-				for j := range iterations {
-					p.Submit(j)
-				}
-				p.Close(ctx)
-			}()
-			p.Wait(ctx)
-		}
-	})
-
-	// Test errgroup implementation
 	b.Run("errgroup", func(b *testing.B) {
+		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
+			var count int32
 			g, _ := errgroup.WithContext(ctx)
 			g.SetLimit(workers)
 
-			for range iterations {
+			for j := 0; j < iterations; j++ {
 				g.Go(func() error {
 					benchTask(n)
+					atomic.AddInt32(&count, 1)
 					return nil
 				})
 			}
-			if err := g.Wait(); err != nil {
-				b.Fatal(err)
-			}
+			require.NoError(b, g.Wait())
+			require.Equal(b, int32(iterations), atomic.LoadInt32(&count))
+		}
+	})
+
+	b.Run("pool default", func(b *testing.B) {
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			var count int32
+			p := New[int](workers, WorkerFunc[int](func(context.Context, int) error {
+				benchTask(n)
+				atomic.AddInt32(&count, 1)
+				return nil
+			}))
+
+			require.NoError(b, p.Go(ctx))
+			go func() {
+				for j := 0; j < iterations; j++ {
+					p.Submit(j)
+				}
+				p.Close(ctx)
+			}()
+			require.NoError(b, p.Wait(ctx))
+			require.Equal(b, int32(iterations), atomic.LoadInt32(&count))
+		}
+	})
+
+	b.Run("pool with chan=100", func(b *testing.B) {
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			var count int32
+			p := New[int](workers, WorkerFunc[int](func(context.Context, int) error {
+				benchTask(n)
+				atomic.AddInt32(&count, 1)
+				return nil
+			})).WithWorkerChanSize(100)
+
+			require.NoError(b, p.Go(ctx))
+			go func() {
+				for j := 0; j < iterations; j++ {
+					p.Submit(j)
+				}
+				p.Close(ctx)
+			}()
+			require.NoError(b, p.Wait(ctx))
+			require.Equal(b, int32(iterations), atomic.LoadInt32(&count))
+		}
+	})
+
+	b.Run("pool with batching", func(b *testing.B) {
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			var count int32
+			p := New[int](workers, WorkerFunc[int](func(context.Context, int) error {
+				benchTask(n)
+				atomic.AddInt32(&count, 1)
+				return nil
+			})).WithWorkerChanSize(100).WithBatchSize(100)
+
+			require.NoError(b, p.Go(ctx))
+			go func() {
+				for j := 0; j < iterations; j++ {
+					p.Submit(j)
+				}
+				p.Close(ctx)
+			}()
+			require.NoError(b, p.Wait(ctx))
+			require.Equal(b, int32(iterations), atomic.LoadInt32(&count))
+		}
+	})
+
+	b.Run("pool with batching and chunking", func(b *testing.B) {
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			var count int32
+			p := New[int](workers, WorkerFunc[int](func(context.Context, int) error {
+				benchTask(n)
+				atomic.AddInt32(&count, 1)
+				return nil
+			})).WithWorkerChanSize(100).WithBatchSize(100).WithChunkFn(func(v int) string {
+				return strconv.Itoa(v % workers)
+			})
+
+			require.NoError(b, p.Go(ctx))
+			go func() {
+				for j := 0; j < iterations; j++ {
+					p.Submit(j)
+				}
+				p.Close(ctx)
+			}()
+			require.NoError(b, p.Wait(ctx))
+			require.Equal(b, int32(iterations), atomic.LoadInt32(&count))
 		}
 	})
 }
