@@ -31,6 +31,46 @@ func benchTask(size int) []int { //nolint:unparam // size is used in the benchma
 	return res
 }
 
+func TestPool(t *testing.T) {
+	n := 1000
+	// pool with 8 workers
+	worker := WorkerFunc[int](func(context.Context, int) error {
+		benchTask(n)
+		return nil
+	})
+	st := time.Now()
+	ctx := context.Background()
+	p := New[int](8, worker).WithWorkerChanSize(100).WithCompleteFn(func(ctx context.Context, id int, worker Worker[int]) error {
+		t.Logf("completed %d", id)
+		return nil
+	}).WithChunkFn(func(v int) string {
+		return strconv.Itoa(v % 8) // distribute by modulo
+	})
+	require.NoError(t, p.Go(ctx))
+
+	go func() {
+		for i := 0; i < 1000000; i++ {
+			p.Submit(i)
+		}
+		require.NoError(t, p.Close(ctx))
+	}()
+	require.NoError(t, p.Wait(ctx))
+	t.Logf("elapsed pool: %v", time.Since(st))
+
+	// errgroup with 8 workers
+	st = time.Now()
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(8)
+	for i := 0; i < 1000000; i++ {
+		g.Go(func() error {
+			benchTask(n)
+			return nil
+		})
+	}
+	require.NoError(t, g.Wait())
+	t.Logf("elapsed errgroup: %v", time.Since(st))
+}
+
 func BenchmarkPool(b *testing.B) {
 	size, workers, iterations := 1000, 8, 100
 	worker := WorkerFunc[int](func(context.Context, int) error {
@@ -57,6 +97,41 @@ func BenchmarkPool(b *testing.B) {
 		// main goroutine waits for completion
 		p.Wait(ctx)
 	}
+}
+
+func BenchmarkPool2(b *testing.B) {
+	worker := WorkerFunc[int](func(context.Context, int) error {
+		benchTask(10)
+		return nil
+	})
+	ctx := context.Background()
+	p := New[int](8, worker).WithWorkerChanSize(100)
+	p.Go(ctx)
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		p.Submit(i)
+	}
+
+	p.Close(ctx)
+	p.Wait(ctx)
+}
+
+func BenchmarkErrGroup(b *testing.B) {
+	ctx := context.Background()
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(8)
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		g.Go(func() error {
+			benchTask(100)
+			return nil
+		})
+	}
+
+	_ = g.Wait()
 }
 
 func BenchmarkPoolCompare(b *testing.B) {
