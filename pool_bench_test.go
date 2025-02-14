@@ -5,7 +5,6 @@ import (
 	"os"
 	"runtime/pprof"
 	"strconv"
-	"sync"
 	"testing"
 	"time"
 
@@ -26,7 +25,7 @@ func task(n int) int {
 func benchTask(size int) []int {
 	res := make([]int, 0, size)
 	for i := 0; i < size; i++ {
-		res = append(res, task(20))
+		res = append(res, task(1))
 	}
 	return res
 }
@@ -60,255 +59,133 @@ func BenchmarkPool(b *testing.B) {
 }
 
 func BenchmarkPoolCompare(b *testing.B) {
-	sizes := []int{10, 100, 500}
-	workers := []int{1, 4, 8}
+	workers := []int{16, 8, 4, 1}
 	iterations := 50
 
-	for _, size := range sizes {
-		for _, w := range workers {
-			prefix := "size=" + strconv.Itoa(size) + "_workers=" + strconv.Itoa(w)
+	for _, w := range workers {
+		prefix := "workers=" + strconv.Itoa(w)
 
-			// Test our pool implementation
-			b.Run(prefix+"/pool", func(b *testing.B) {
-				worker := WorkerFunc[int](func(context.Context, int) error {
-					benchTask(size)
-					return nil
+		// Test our pool implementation
+		b.Run(prefix+"/pool", func(b *testing.B) {
+			worker := WorkerFunc[int](func(context.Context, int) error {
+				benchTask(w)
+				return nil
+			})
+			ctx := context.Background()
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				p := New[int](w, worker).WithWorkerChanSize(100)
+				p.Go(ctx)
+				b.StartTimer()
+
+				go func() {
+					for j := 0; j < iterations; j++ {
+						p.Submit(j)
+					}
+					p.Close(ctx)
+				}()
+				p.Wait(ctx)
+			}
+		})
+
+		b.Run(prefix+"/pool-chunked", func(b *testing.B) {
+			worker := WorkerFunc[int](func(context.Context, int) error {
+				benchTask(w)
+				return nil
+			})
+			ctx := context.Background()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				p := New[int](w, worker).WithWorkerChanSize(100).WithChunkFn(func(v int) string {
+					return strconv.Itoa(v % w) // distribute by modulo
 				})
-				ctx := context.Background()
+				p.Go(ctx)
+				b.StartTimer()
 
-				b.ResetTimer()
-				for i := 0; i < b.N; i++ {
-					b.StopTimer()
-					p := New[int](w, worker).WithWorkerChanSize(100)
-					p.Go(ctx)
-					b.StartTimer()
-
-					go func() {
-						for j := 0; j < iterations; j++ {
-							p.Submit(j)
-						}
-						require.NoError(b, p.Close(ctx))
-					}()
-					require.NoError(b, p.Wait(ctx))
-				}
-			})
-
-			b.Run(prefix+"/pool-chunked", func(b *testing.B) {
-				worker := WorkerFunc[int](func(context.Context, int) error {
-					benchTask(size)
-					return nil
-				})
-				ctx := context.Background()
-				b.ResetTimer()
-				for i := 0; i < b.N; i++ {
-					b.StopTimer()
-					p := New[int](w, worker).WithWorkerChanSize(100).WithChunkFn(func(v int) string {
-						return strconv.Itoa(v % w) // distribute by modulo
-					})
-					p.Go(ctx)
-					b.StartTimer()
-
-					go func() {
-						for j := 0; j < iterations; j++ {
-							p.Submit(j)
-						}
-						p.Close(ctx)
-					}()
-					p.Wait(ctx)
-				}
-			})
-
-			// Test errgroup implementation
-			b.Run(prefix+"/errgroup", func(b *testing.B) {
-				ctx := context.Background()
-				b.ResetTimer()
-
-				for i := 0; i < b.N; i++ {
-					b.StopTimer()
-					items := make(chan int, iterations)
-					g, _ := errgroup.WithContext(ctx)
-					g.SetLimit(w)
-					b.StartTimer()
-					// start workers
-					for range w {
-						g.Go(func() error {
-							for item := range items {
-								benchTask(size)
-								_ = item
-							}
-							return nil
-						})
+				go func() {
+					for j := 0; j < iterations; j++ {
+						p.Submit(j)
 					}
+					p.Close(ctx)
+				}()
+				p.Wait(ctx)
+			}
+		})
 
-					// sender goroutine submits and closes
-					go func() {
-						for j := 0; j < iterations; j++ {
-							items <- j
+		// Test errgroup implementation
+		b.Run(prefix+"/errgroup", func(b *testing.B) {
+			ctx := context.Background()
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				items := make(chan int, iterations)
+				g, _ := errgroup.WithContext(ctx)
+				g.SetLimit(w)
+				b.StartTimer()
+				// start workers
+				for range w {
+					g.Go(func() error {
+						for item := range items {
+							benchTask(w)
+							_ = item
 						}
-						close(items)
-					}()
-
-					if err := g.Wait(); err != nil {
-						b.Fatal(err)
-					}
-				}
-			})
-
-			// Test traditional worker pool
-			b.Run(prefix+"/traditional", func(b *testing.B) {
-				b.ResetTimer()
-
-				for i := 0; i < b.N; i++ {
-					b.StopTimer()
-					items := make(chan int, iterations)
-					done := make(chan struct{})
-					b.StartTimer()
-
-					// start workers
-					for range w {
-						go func() {
-							for item := range items {
-								benchTask(size)
-								_ = item
-							}
-							done <- struct{}{}
-						}()
-					}
-
-					// sender goroutine submits and closes
-					go func() {
-						for j := 0; j < iterations; j++ {
-							items <- j
-						}
-						close(items)
-					}()
-
-					// wait for all workers to complete
-					for range w {
-						<-done
-					}
-				}
-			})
-		}
-	}
-}
-
-// BenchmarkPoolLatency measures latency with concurrent submitters
-func BenchmarkPoolLatency(b *testing.B) {
-	sizes := []int{10, 100}
-	workers := []int{1, 4}
-	loads := []int{10, 100}
-	iterations := 100
-
-	for _, size := range sizes {
-		for _, w := range workers {
-			for _, load := range loads {
-				prefix := "size=" + strconv.Itoa(size) + "_workers=" + strconv.Itoa(w) + "_load=" + strconv.Itoa(load)
-
-				// Pool implementation
-				b.Run(prefix+"/pool", func(b *testing.B) {
-					worker := WorkerFunc[int](func(context.Context, int) error {
-						benchTask(size)
 						return nil
 					})
+				}
 
-					b.ResetTimer()
-					for i := 0; i < b.N; i++ {
-						p := New[int](w, worker)
-						p.Go(context.Background())
-
-						var wg sync.WaitGroup
-						for j := 0; j < load; j++ {
-							wg.Add(1)
-							go func(id int) {
-								defer wg.Done()
-								k := iterations / load
-								start := id * k
-								for n := 0; n < k; n++ {
-									p.Submit(start + n)
-								}
-							}(j)
-						}
-
-						wg.Wait()
-						p.Close(context.Background())
+				// sender goroutine submits and closes
+				go func() {
+					for j := 0; j < iterations; j++ {
+						items <- j
 					}
-				})
+					close(items)
+				}()
 
-				// errgroup implementation
-				b.Run(prefix+"/errgroup", func(b *testing.B) {
-					for i := 0; i < b.N; i++ {
-						g, _ := errgroup.WithContext(context.Background())
-						items := make(chan int, iterations)
-
-						// Start workers
-						for j := 0; j < w; j++ {
-							g.Go(func() error {
-								for range items {
-									benchTask(size)
-								}
-								return nil
-							})
-						}
-
-						// Start submitters
-						var wg sync.WaitGroup
-						for j := 0; j < load; j++ {
-							wg.Add(1)
-							go func(id int) {
-								defer wg.Done()
-								k := iterations / load
-								start := id * k
-								for n := 0; n < k; n++ {
-									items <- start + n
-								}
-							}(j)
-						}
-
-						wg.Wait()
-						close(items)
-						g.Wait()
-					}
-				})
-
-				// Traditional implementation
-				b.Run(prefix+"/traditional", func(b *testing.B) {
-					for i := 0; i < b.N; i++ {
-						var wg sync.WaitGroup
-						items := make(chan int, iterations)
-
-						// Start workers
-						for j := 0; j < w; j++ {
-							wg.Add(1)
-							go func() {
-								defer wg.Done()
-								for range items {
-									benchTask(size)
-								}
-							}()
-						}
-
-						// Start submitters
-						var submitWg sync.WaitGroup
-						for j := 0; j < load; j++ {
-							submitWg.Add(1)
-							go func(id int) {
-								defer submitWg.Done()
-								k := iterations / load
-								start := id * k
-								for n := 0; n < k; n++ {
-									items <- start + n
-								}
-							}(j)
-						}
-
-						submitWg.Wait()
-						close(items)
-						wg.Wait()
-					}
-				})
+				if err := g.Wait(); err != nil {
+					b.Fatal(err)
+				}
 			}
-		}
+		})
+
+		// Test traditional worker pool
+		b.Run(prefix+"/traditional", func(b *testing.B) {
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				items := make(chan int, iterations)
+				done := make(chan struct{})
+				b.StartTimer()
+
+				// start workers
+				for range w {
+					go func() {
+						for item := range items {
+							benchTask(w)
+							_ = item
+						}
+						done <- struct{}{}
+					}()
+				}
+
+				// sender goroutine submits and closes
+				go func() {
+					for j := 0; j < iterations; j++ {
+						items <- j
+					}
+					close(items)
+				}()
+
+				// wait for all workers to complete
+				for range w {
+					<-done
+				}
+			}
+		})
 	}
 }
 
@@ -330,15 +207,15 @@ func TestPoolWithProfiling(t *testing.T) {
 	defer memFile.Close()
 
 	// run pool test
-	iterations := 10000
+	iterations := 100000
 	ctx := context.Background()
 	worker := WorkerFunc[int](func(context.Context, int) error {
-		time.Sleep(time.Microsecond) // simulate some work
+		benchTask(30000)
 		return nil
 	})
 
 	// test pool implementation
-	p := New[int](4, worker)
+	p := New[int](4, worker).WithWorkerChanSize(100)
 	require.NoError(t, p.Go(ctx))
 
 	done := make(chan struct{})

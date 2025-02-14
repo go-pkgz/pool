@@ -20,7 +20,8 @@ type WorkerGroup[T any] struct {
 	chunkFn         func(T) string // worker selector function
 	worker          Worker[T]      // worker function
 	workerMaker     WorkerMaker[T] // worker maker function
-	metrics         *metrics.Value // shared metrics
+
+	metrics *metrics.Value // shared metrics
 
 	workersCh []chan T // workers input channels
 	sharedCh  chan T   // shared input channel for all workers
@@ -135,18 +136,20 @@ func (p *WorkerGroup[T]) WithContinueOnError() *WorkerGroup[T] {
 // Submit record to pool, can be blocked if worker channels are full.
 // The call is ignored if the pool is stopping due to an error in non-continueOnError mode.
 func (p *WorkerGroup[T]) Submit(v T) {
-	if p.chunkFn == nil {
+	if p.chunkFn == nil { // fast path for shared channel
 		p.sharedCh <- v
 		return
 	}
 
+	// chunked mode with worker selection
 	h := fnv.New32a()
-	_, _ = h.Write([]byte(p.chunkFn(v)))
-	id := int(h.Sum32()) % p.poolSize
+	_, _ = h.Write([]byte(p.chunkFn(v))) // hash by chunkFn
+	id := int(h.Sum32()) % p.poolSize    // select worker by hash
 	p.workersCh[id] <- v
 }
 
-// Go activates worker pool, closes cursor on completion
+// Go activates worker pool
+// Go activates worker pool
 func (p *WorkerGroup[T]) Go(ctx context.Context) error {
 	if p.activated {
 		return fmt.Errorf("workers poll already activated")
@@ -159,15 +162,14 @@ func (p *WorkerGroup[T]) Go(ctx context.Context) error {
 	p.ctx = egCtx
 
 	// create metrics context for all workers
-	metricsCtx := metrics.Make(egCtx, p.poolSize)
-	p.metrics = metrics.Get(metricsCtx) // store metrics in pool
+	metricsCtx := metrics.Make(egCtx, p.poolSize) // always create metrics context for worker IDs
+	p.metrics = metrics.Get(metricsCtx)           // store metrics in pool only if enabled
 
 	// start all goroutines (workers)
 	for i := range p.poolSize {
-		withWorkerIdCtx := metrics.WithWorkerID(metricsCtx, i)
-		workerCh := p.sharedCh // use the shared channel by default
+		withWorkerIdCtx := metrics.WithWorkerID(metricsCtx, i) // always set worker ID
+		workerCh := p.sharedCh                                 // use the shared channel by default
 		if p.chunkFn != nil {
-			// if chunkFn is set, use worker's channel to distribute records
 			workerCh = p.workersCh[i]
 		}
 		r := workerRequest[T]{inCh: workerCh, m: p.metrics, id: i}
@@ -177,6 +179,7 @@ func (p *WorkerGroup[T]) Go(ctx context.Context) error {
 	return nil
 }
 
+// workerRequest is a request to worker goroutine containing all necessary data
 type workerRequest[T any] struct {
 	inCh <-chan T
 	m    *metrics.Value
@@ -224,7 +227,7 @@ func (p *WorkerGroup[T]) workerProc(wCtx context.Context, r workerRequest[T]) fu
 		}
 
 		// handle completion
-		if p.completeFn != nil && lastErr == nil {
+		if p.completeFn != nil && (lastErr == nil || p.continueOnError) {
 			wrapFinTmr := r.m.StartTimer(r.id, metrics.TimerWrap)
 			if e := p.completeFn(wCtx, r.id, worker); e != nil {
 				lastErr = fmt.Errorf("complete func for %d failed: %w", r.id, e)

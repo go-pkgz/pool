@@ -238,8 +238,8 @@ func TestPool_Distribution(t *testing.T) {
 		require.NoError(t, p.Close(context.Background()))
 
 		// check both workers got some work
-		assert.Greater(t, counts[0], int32(0), "worker 0 should process some items")
-		assert.Greater(t, counts[1], int32(0), "worker 1 should process some items")
+		assert.Positive(t, counts[0], "worker 0 should process some items")
+		assert.Positive(t, counts[1], "worker 1 should process some items")
 
 		// check rough distribution, allow more variance as it's scheduler-dependent
 		diff := math.Abs(float64(counts[0]-counts[1])) / float64(n)
