@@ -2,28 +2,27 @@ package pool
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"runtime/pprof"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
 )
 
-// task simulates some CPU-bound work
-func task(n int) int {
-	sum := 0
-	for i := 0; i < n; i++ {
-		sum += i
-	}
-	return sum
-}
-
 // benchTask is a somewhat realistic task that combines CPU work with memory allocation
 func benchTask(size int) []int { //nolint:unparam // size is used in the benchmark
+	task := func(n int) int { // simulate some CPU work
+		sum := 0
+		for i := 0; i < n; i++ {
+			sum += i
+		}
+		return sum
+	}
 	res := make([]int, 0, size)
 	for i := 0; i < size; i++ {
 		res = append(res, task(1))
@@ -31,293 +30,200 @@ func benchTask(size int) []int { //nolint:unparam // size is used in the benchma
 	return res
 }
 
-func TestPool(t *testing.T) {
+func TestPoolPerf(t *testing.T) {
 	n := 1000
-	// pool with 8 workers
+	ctx := context.Background()
+
+	t.Run("errgroup", func(t *testing.T) {
+		var count2 int32
+		st := time.Now()
+		defer func() {
+			t.Logf("elapsed errgroup: %v", time.Since(st))
+		}()
+		g, _ := errgroup.WithContext(ctx)
+		g.SetLimit(8)
+		for i := 0; i < 1000000; i++ {
+			g.Go(func() error {
+				benchTask(n)
+				atomic.AddInt32(&count2, 1)
+				return nil
+			})
+		}
+		require.NoError(t, g.Wait())
+		assert.Equal(t, int32(1000000), atomic.LoadInt32(&count2))
+	})
+
+	t.Run("pool default", func(t *testing.T) {
+		// pool with 8 workers
+		var count1 int32
+		worker := WorkerFunc[int](func(context.Context, int) error {
+			benchTask(n)
+			atomic.AddInt32(&count1, 1)
+			return nil
+		})
+
+		st := time.Now()
+		p := New[int](8, worker)
+		require.NoError(t, p.Go(ctx))
+		go func() {
+			for i := 0; i < 1000000; i++ {
+				p.Submit(i)
+			}
+			assert.NoError(t, p.Close(ctx))
+		}()
+		require.NoError(t, p.Wait(ctx))
+		assert.Equal(t, int32(1000000), atomic.LoadInt32(&count1))
+		t.Logf("elapsed pool: %v", time.Since(st))
+	})
+
+	t.Run("pool with 100 chan size", func(t *testing.T) {
+		// pool with 8 workers
+		var count1 int32
+		worker := WorkerFunc[int](func(context.Context, int) error {
+			benchTask(n)
+			atomic.AddInt32(&count1, 1)
+			return nil
+		})
+
+		st := time.Now()
+		p := New[int](8, worker).WithWorkerChanSize(100)
+		require.NoError(t, p.Go(ctx))
+		go func() {
+			for i := 0; i < 1000000; i++ {
+				p.Submit(i)
+			}
+			assert.NoError(t, p.Close(ctx))
+		}()
+		require.NoError(t, p.Wait(ctx))
+		assert.Equal(t, int32(1000000), atomic.LoadInt32(&count1))
+		t.Logf("elapsed pool: %v", time.Since(st))
+	})
+
+	t.Run("pool with 100 chan size and 100 batch size", func(t *testing.T) {
+		// pool with 8 workers
+		var count1 int32
+		worker := WorkerFunc[int](func(context.Context, int) error {
+			benchTask(n)
+			atomic.AddInt32(&count1, 1)
+			return nil
+		})
+
+		st := time.Now()
+		p := New[int](8, worker).WithWorkerChanSize(100).WithBatchSize(100)
+		require.NoError(t, p.Go(ctx))
+		go func() {
+			for i := 0; i < 1000000; i++ {
+				p.Submit(i)
+			}
+			assert.NoError(t, p.Close(ctx))
+		}()
+		require.NoError(t, p.Wait(ctx))
+		assert.Equal(t, int32(1000000), atomic.LoadInt32(&count1))
+		t.Logf("elapsed pool: %v", time.Since(st))
+	})
+
+	t.Run("pool with 100 chan size and 100 batch size and chunking", func(t *testing.T) {
+		// pool with 8 workers
+		var count1 int32
+		worker := WorkerFunc[int](func(context.Context, int) error {
+			benchTask(n)
+			atomic.AddInt32(&count1, 1)
+			return nil
+		})
+
+		st := time.Now()
+		p := New[int](8, worker).WithWorkerChanSize(100).WithBatchSize(100).WithChunkFn(func(v int) string {
+			return strconv.Itoa(v % 8) // distribute by modulo
+		})
+		require.NoError(t, p.Go(ctx))
+		go func() {
+			for i := 0; i < 1000000; i++ {
+				p.Submit(i)
+			}
+			assert.NoError(t, p.Close(ctx))
+		}()
+		require.NoError(t, p.Wait(ctx))
+		assert.Equal(t, int32(1000000), atomic.LoadInt32(&count1))
+		t.Logf("elapsed pool: %v", time.Since(st))
+	})
+
+}
+
+func BenchmarkPoolCompare(b *testing.B) {
+	iterations := 5000
+	workers := 16
+	n := 5000
+
+	ctx := context.Background()
 	worker := WorkerFunc[int](func(context.Context, int) error {
 		benchTask(n)
 		return nil
 	})
-	st := time.Now()
-	ctx := context.Background()
-	p := New[int](8, worker).WithWorkerChanSize(100).WithCompleteFn(func(ctx context.Context, id int, worker Worker[int]) error {
-		t.Logf("completed %d", id)
-		return nil
-	}).WithChunkFn(func(v int) string {
-		return strconv.Itoa(v % 8) // distribute by modulo
-	})
-	require.NoError(t, p.Go(ctx))
 
-	go func() {
-		for i := 0; i < 1000000; i++ {
-			p.Submit(i)
+	b.Run("pool with chan=100", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			p := New[int](workers, worker).WithWorkerChanSize(100)
+			p.Go(ctx)
+
+			go func() {
+				for j := range iterations {
+					p.Submit(j)
+				}
+				p.Close(ctx)
+			}()
+			p.Wait(ctx)
 		}
-		require.NoError(t, p.Close(ctx))
-	}()
-	require.NoError(t, p.Wait(ctx))
-	t.Logf("elapsed pool: %v", time.Since(st))
-
-	// errgroup with 8 workers
-	st = time.Now()
-	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(8)
-	for i := 0; i < 1000000; i++ {
-		g.Go(func() error {
-			benchTask(n)
-			return nil
-		})
-	}
-	require.NoError(t, g.Wait())
-	t.Logf("elapsed errgroup: %v", time.Since(st))
-}
-
-func BenchmarkPool(b *testing.B) {
-	size, workers, iterations := 1000, 8, 100
-	worker := WorkerFunc[int](func(context.Context, int) error {
-		benchTask(size)
-		return nil
 	})
-	ctx := context.Background()
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		b.StopTimer()
-		p := New[int](workers, worker)
-		p.Go(ctx)
-		b.StartTimer()
+	b.Run("pool-chunked", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			p := New[int](workers, worker).WithWorkerChanSize(100).WithChunkFn(func(v int) string {
+				return strconv.Itoa(v % (v + 1)) // distribute by modulo
+			})
+			p.Go(ctx)
 
-		// sender runs submissions and closes the pool
-		go func() {
-			for j := 0; j < iterations; j++ {
-				p.Submit(j)
-			}
-			p.Close(ctx) // close after all submissions
-		}()
-
-		// main goroutine waits for completion
-		p.Wait(ctx)
-	}
-}
-
-func BenchmarkPool2(b *testing.B) {
-	worker := WorkerFunc[int](func(context.Context, int) error {
-		benchTask(10)
-		return nil
+			go func() {
+				for j := range iterations {
+					p.Submit(j)
+				}
+				p.Close(ctx)
+			}()
+			p.Wait(ctx)
+		}
 	})
-	ctx := context.Background()
-	p := New[int](8, worker).WithWorkerChanSize(100)
-	p.Go(ctx)
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
-		p.Submit(i)
-	}
+	b.Run("pool-batched", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			p := New[int](workers, worker).WithWorkerChanSize(100).WithBatchSize(100)
+			p.Go(ctx)
 
-	p.Close(ctx)
-	p.Wait(ctx)
-}
+			go func() {
+				for j := range iterations {
+					p.Submit(j)
+				}
+				p.Close(ctx)
+			}()
+			p.Wait(ctx)
+		}
+	})
 
-func BenchmarkErrGroup(b *testing.B) {
-	ctx := context.Background()
-	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(8)
+	// Test errgroup implementation
+	b.Run("errgroup", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			g, _ := errgroup.WithContext(ctx)
+			g.SetLimit(workers)
 
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		g.Go(func() error {
-			benchTask(100)
-			return nil
-		})
-	}
-
-	_ = g.Wait()
-}
-
-func BenchmarkPoolCompare(b *testing.B) {
-	workers := []int{16, 8, 4, 1}
-	iterations := 500
-
-	for _, w := range workers {
-		prefix := "workers=" + strconv.Itoa(w)
-
-		// Test our pool implementation
-		b.Run(prefix+"/pool", func(b *testing.B) {
-			worker := WorkerFunc[int](func(context.Context, int) error {
-				benchTask(w)
-				return nil
-			})
-			ctx := context.Background()
-
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				b.StopTimer()
-				p := New[int](w, worker).WithWorkerChanSize(100)
-				p.Go(ctx)
-				b.StartTimer()
-
-				go func() {
-					for j := 0; j < iterations; j++ {
-						p.Submit(j)
-					}
-					p.Close(ctx)
-				}()
-				p.Wait(ctx)
-			}
-		})
-
-		b.Run(prefix+"/pool-chunked", func(b *testing.B) {
-			worker := WorkerFunc[int](func(context.Context, int) error {
-				benchTask(w)
-				return nil
-			})
-			ctx := context.Background()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				b.StopTimer()
-				p := New[int](w, worker).WithWorkerChanSize(100).WithChunkFn(func(v int) string {
-					return strconv.Itoa(v % w) // distribute by modulo
-				})
-				p.Go(ctx)
-				b.StartTimer()
-
-				go func() {
-					for j := 0; j < iterations; j++ {
-						p.Submit(j)
-					}
-					p.Close(ctx)
-				}()
-				p.Wait(ctx)
-			}
-		})
-
-		// Test batched pool implementation
-		batchSizes := []int{0, 5, 10, 20}
-		for _, batchSize := range batchSizes {
-			b.Run(fmt.Sprintf("%s/pool-batch-%d", prefix, batchSize), func(b *testing.B) {
-				worker := WorkerFunc[int](func(context.Context, int) error {
-					benchTask(w)
+			for range iterations {
+				g.Go(func() error {
+					benchTask(n)
 					return nil
 				})
-				ctx := context.Background()
-				b.ResetTimer()
-				for i := 0; i < b.N; i++ {
-					b.StopTimer()
-					p := New[int](w, worker).
-						WithWorkerChanSize(100).
-						WithBatchSize(batchSize)
-					p.Go(ctx)
-					b.StartTimer()
-
-					go func() {
-						for j := 0; j < iterations; j++ {
-							p.Submit(j)
-						}
-						p.Close(ctx)
-					}()
-					p.Wait(ctx)
-				}
-			})
-
-			// Test batched pool with chunking
-			b.Run(fmt.Sprintf("%s/pool-batch-%d-chunked", prefix, batchSize), func(b *testing.B) {
-				worker := WorkerFunc[int](func(context.Context, int) error {
-					benchTask(w)
-					return nil
-				})
-				ctx := context.Background()
-				b.ResetTimer()
-				for i := 0; i < b.N; i++ {
-					b.StopTimer()
-					p := New[int](w, worker).WithWorkerChanSize(100).WithBatchSize(batchSize).WithChunkFn(func(v int) string {
-						return strconv.Itoa(v % w)
-					})
-					p.Go(ctx)
-					b.StartTimer()
-
-					go func() {
-						for j := 0; j < iterations; j++ {
-							p.Submit(j)
-						}
-						p.Close(ctx)
-					}()
-					p.Wait(ctx)
-				}
-			})
+			}
+			if err := g.Wait(); err != nil {
+				b.Fatal(err)
+			}
 		}
-
-		// Test errgroup implementation
-		b.Run(prefix+"/errgroup", func(b *testing.B) {
-			ctx := context.Background()
-			b.ResetTimer()
-
-			for i := 0; i < b.N; i++ {
-				b.StopTimer()
-				items := make(chan int, iterations)
-				g, _ := errgroup.WithContext(ctx)
-				g.SetLimit(w)
-				b.StartTimer()
-				// start workers
-				for range w {
-					g.Go(func() error {
-						for item := range items {
-							benchTask(w)
-							_ = item
-						}
-						return nil
-					})
-				}
-
-				// sender goroutine submits and closes
-				go func() {
-					for j := 0; j < iterations; j++ {
-						items <- j
-					}
-					close(items)
-				}()
-
-				if err := g.Wait(); err != nil {
-					b.Fatal(err)
-				}
-			}
-		})
-
-		// Test traditional worker pool
-		b.Run(prefix+"/traditional", func(b *testing.B) {
-			b.ResetTimer()
-
-			for i := 0; i < b.N; i++ {
-				b.StopTimer()
-				items := make(chan int, iterations)
-				done := make(chan struct{})
-				b.StartTimer()
-
-				// start workers
-				for range w {
-					go func() {
-						for item := range items {
-							benchTask(w)
-							_ = item
-						}
-						done <- struct{}{}
-					}()
-				}
-
-				// sender goroutine submits and closes
-				go func() {
-					for j := 0; j < iterations; j++ {
-						items <- j
-					}
-					close(items)
-				}()
-
-				// wait for all workers to complete
-				for range w {
-					<-done
-				}
-			}
-		})
-	}
+	})
 }
 
 func TestPoolWithProfiling(t *testing.T) {
