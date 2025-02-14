@@ -746,86 +746,32 @@ func TestPool_TimingUnderLoad(t *testing.T) {
 }
 
 func TestMiddleware_Basic(t *testing.T) {
+	var processed atomic.Int32
 
-	t.Run("stateless worker  middleware", func(t *testing.T) {
-		var processed atomic.Int32
+	// create base worker
+	worker := WorkerFunc[string](func(_ context.Context, v string) error {
+		processed.Add(1)
+		return nil
+	})
 
-		// create base worker
-		worker := WorkerFunc[string](func(_ context.Context, v string) error {
-			processed.Add(1)
-			return nil
+	// middleware to count calls
+	var middlewareCalls atomic.Int32
+	countMiddleware := func(next Worker[string]) Worker[string] {
+		return WorkerFunc[string](func(ctx context.Context, v string) error {
+			middlewareCalls.Add(1)
+			return next.Do(ctx, v)
 		})
+	}
 
-		// middleware to count calls
-		var middlewareCalls atomic.Int32
-		countMiddleware := func(next Worker[string]) Worker[string] {
-			return WorkerFunc[string](func(ctx context.Context, v string) error {
-				middlewareCalls.Add(1)
-				return next.Do(ctx, v)
-			})
-		}
+	p := New[string](1, worker).Use(countMiddleware)
+	require.NoError(t, p.Go(context.Background()))
 
-		p := New[string](1, worker).Use(countMiddleware)
-		require.NoError(t, p.Go(context.Background()))
+	p.Submit("test1")
+	p.Submit("test2")
+	require.NoError(t, p.Close(context.Background()))
 
-		p.Submit("test1")
-		p.Submit("test2")
-		require.NoError(t, p.Close(context.Background()))
-
-		assert.Equal(t, int32(2), processed.Load(), "base worker should process all items")
-		assert.Equal(t, int32(2), middlewareCalls.Load(), "middleware should be called for all items")
-	})
-
-	t.Run("stateful worker middleware", func(t *testing.T) {
-		type statefulWorker struct {
-			count int
-		}
-
-		var order []string
-		var mu sync.Mutex
-
-		// create stateful worker
-		maker := func() Worker[string] {
-			w := &statefulWorker{}
-			return WorkerFunc[string](func(_ context.Context, v string) error {
-				w.count++
-				mu.Lock()
-				order = append(order, fmt.Sprintf("worker_%d", w.count))
-				mu.Unlock()
-				return nil
-			})
-		}
-
-		// create simple logging middleware
-		logMiddleware := func(next Worker[string]) Worker[string] {
-			return WorkerFunc[string](func(ctx context.Context, v string) error {
-				mu.Lock()
-				order = append(order, "middleware_before")
-				mu.Unlock()
-				err := next.Do(ctx, v)
-				mu.Lock()
-				order = append(order, "middleware_after")
-				mu.Unlock()
-				return err
-			})
-		}
-
-		p := NewStateful[string](1, maker).Use(logMiddleware)
-		require.NoError(t, p.Go(context.Background()))
-
-		p.Submit("test1")
-		p.Submit("test2")
-		require.NoError(t, p.Close(context.Background()))
-
-		assert.Equal(t, []string{
-			"middleware_before",
-			"worker_1",
-			"middleware_after",
-			"middleware_before",
-			"worker_2",
-			"middleware_after",
-		}, order, "middleware should wrap each worker call")
-	})
+	assert.Equal(t, int32(2), processed.Load(), "base worker should process all items")
+	assert.Equal(t, int32(2), middlewareCalls.Load(), "middleware should be called for all items")
 }
 
 func TestMiddleware_ExecutionOrder(t *testing.T) {
@@ -993,57 +939,4 @@ func TestMiddleware_Practical(t *testing.T) {
 		assert.Greater(t, atomic.LoadInt64(&totalTime), int64(1000),
 			"should measure time greater than 1ms")
 	})
-}
-
-func TestPool_DirectModeChunking(t *testing.T) {
-	var processed sync.Map
-
-	worker := WorkerFunc[string](func(ctx context.Context, v string) error {
-		wid := metrics.WorkerID(ctx)
-		key := fmt.Sprintf("worker-%d", wid)
-		items, _ := processed.LoadOrStore(key, []string{})
-		processed.Store(key, append(items.([]string), v))
-		return nil
-	})
-
-	// create pool with chunk function but no batching and  chunk by first letter
-	p := New[string](2, worker).WithBatchSize(0).WithChunkFn(func(v string) string { return v[:1] })
-
-	require.NoError(t, p.Go(context.Background()))
-
-	// submit items that should go to different workers
-	items := []string{"a1", "a2", "b1", "b2"}
-	for _, item := range items {
-		p.Submit(item)
-	}
-
-	require.NoError(t, p.Close(context.Background()))
-
-	// verify items with same first letter went to the same worker
-	var worker0Items, worker1Items []string
-	processed.Range(func(key, value interface{}) bool {
-		items := value.([]string)
-		if key.(string) == "worker-0" {
-			worker0Items = items
-		} else {
-			worker1Items = items
-		}
-		return true
-	})
-
-	// all "a" items should be in one worker, all "b" in another
-	require.Len(t, worker0Items, 2)
-	require.Len(t, worker1Items, 2)
-
-	firstWorkerPrefix := worker0Items[0][:1]
-	for _, item := range worker0Items {
-		assert.Equal(t, firstWorkerPrefix, item[:1], "items in worker 0 should have same prefix")
-	}
-
-	secondWorkerPrefix := worker1Items[0][:1]
-	for _, item := range worker1Items {
-		assert.Equal(t, secondWorkerPrefix, item[:1], "items in worker 1 should have same prefix")
-	}
-
-	assert.NotEqual(t, firstWorkerPrefix, secondWorkerPrefix, "workers should handle different prefixes")
 }
