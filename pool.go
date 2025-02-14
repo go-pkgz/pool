@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
-	"math/rand"
-	"sync"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -14,29 +12,20 @@ import (
 )
 
 // WorkerGroup is a simple case of flow with a single stage only running a common function in workers pool.
-// IN type if for input (submitted) records, OUT type is for output records in case if worker function should
-// return some values.
 type WorkerGroup[T any] struct {
-	poolSize  int // number of workers (goroutines)
-	batchSize int // size of batch sends to workers
-
-	chunkFn         func(T) string // worker selector function
+	poolSize        int            // number of workers (goroutines)
 	workerChanSize  int            // size of worker channels
-	worker          Worker[T]      // worker function
-	workerMaker     WorkerMaker[T] // worker maker function
 	completeFn      CompleteFn[T]  // completion callback function, called by each worker on completion
 	continueOnError bool           // don't terminate on first error
+	chunkFn         func(T) string // worker selector function
+	worker          Worker[T]      // worker function
+	workerMaker     WorkerMaker[T] // worker maker function
+	metrics         *metrics.Value // shared metrics
 
-	buf       [][]T          // batch buffers for workers
-	workersCh []chan []T     // workers input channels
-	metrics   *metrics.Value // shared metrics
+	workersCh []chan T // workers input channels
+	sharedCh  chan T   // shared input channel for all workers
 
-	eg  *errgroup.Group
-	err struct {
-		sync.Once
-		ch chan struct{}
-	}
-
+	eg        *errgroup.Group
 	activated bool
 	ctx       context.Context
 }
@@ -70,20 +59,15 @@ func New[T any](size int, worker Worker[T]) *WorkerGroup[T] {
 
 	res := &WorkerGroup[T]{
 		poolSize:       size,
-		workersCh:      make([]chan []T, size),
-		buf:            make([][]T, size),
+		workersCh:      make([]chan T, size),
+		sharedCh:       make(chan T, size),
 		worker:         worker,
-		batchSize:      1,
 		workerChanSize: 1,
 	}
-	res.err.ch = make(chan struct{})
 
-	// initialize worker's channels and batch buffers
+	// initialize worker's channels
 	for id := range size {
-		res.workersCh[id] = make(chan []T, res.workerChanSize)
-		if res.batchSize > 1 {
-			res.buf[id] = make([]T, 0, size)
-		}
+		res.workersCh[id] = make(chan T, res.workerChanSize)
 	}
 
 	return res
@@ -99,22 +83,18 @@ func NewStateful[T any](size int, maker func() Worker[T]) *WorkerGroup[T] {
 
 	res := &WorkerGroup[T]{
 		poolSize:       size,
-		workersCh:      make([]chan []T, size),
-		buf:            make([][]T, size),
+		workersCh:      make([]chan T, size),
+		sharedCh:       make(chan T, size),
 		workerMaker:    maker,
-		batchSize:      1,
 		workerChanSize: 1,
 		ctx:            context.Background(),
 	}
-	res.err.ch = make(chan struct{})
 
-	// initialize worker's channels and batch buffers
+	// initialize worker's channels
 	for id := range size {
-		res.workersCh[id] = make(chan []T, res.workerChanSize)
-		if res.batchSize > 1 {
-			res.buf[id] = make([]T, 0, size)
-		}
+		res.workersCh[id] = make(chan T, res.workerChanSize)
 	}
+
 	return res
 }
 
@@ -137,17 +117,6 @@ func (p *WorkerGroup[T]) WithCompleteFn(fn CompleteFn[T]) *WorkerGroup[T] {
 	return p
 }
 
-// WithBatchSize sets the size of the batches. This is used to send multiple values
-// to workers in a single batch. This can be useful to reduce contention on worker channels.
-// Default: 1
-func (p *WorkerGroup[T]) WithBatchSize(size int) *WorkerGroup[T] {
-	p.batchSize = size
-	if size < 1 {
-		p.batchSize = 1
-	}
-	return p
-}
-
 // WithChunkFn sets the chunk function, used to distribute records to workers.
 // This is useful to distribute records to workers predictably.
 // Default: none
@@ -166,37 +135,15 @@ func (p *WorkerGroup[T]) WithContinueOnError() *WorkerGroup[T] {
 // Submit record to pool, can be blocked if worker channels are full.
 // The call is ignored if the pool is stopping due to an error in non-continueOnError mode.
 func (p *WorkerGroup[T]) Submit(v T) {
-	// randomize distribution by default
-	id := rand.Intn(p.poolSize) //nolint:gosec // no need for secure random here, just distribution
-	if p.chunkFn != nil {
-		// chunked distribution
-		h := fnv.New32a()
-		_, _ = h.Write([]byte(p.chunkFn(v)))
-		id = int(h.Sum32()) % p.poolSize
-	}
-
-	if p.batchSize <= 1 {
-		// skip all buffering if batch size is 1 or less
-		p.workersCh[id] <- append([]T{}, v)
+	if p.chunkFn == nil {
+		p.sharedCh <- v
 		return
 	}
 
-	if !p.continueOnError {
-		select {
-		case <-p.err.ch: // closed due to worker error
-			return
-		default:
-		}
-	}
-
-	p.buf[id] = append(p.buf[id], v)   // add to batch buffer
-	if len(p.buf[id]) >= p.batchSize { // submit buffer to workers
-		// create a copy to avoid race conditions
-		cp := make([]T, len(p.buf[id]))
-		copy(cp, p.buf[id])
-		p.workersCh[id] <- cp
-		p.buf[id] = p.buf[id][:0] // reset size, keep capacity
-	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(p.chunkFn(v)))
+	id := int(h.Sum32()) % p.poolSize
+	p.workersCh[id] <- v
 }
 
 // Go activates worker pool, closes cursor on completion
@@ -211,165 +158,114 @@ func (p *WorkerGroup[T]) Go(ctx context.Context) error {
 	p.eg, egCtx = errgroup.WithContext(ctx)
 	p.ctx = egCtx
 
-	// create shared metrics context for workers
-	workerCtx := metrics.Make(egCtx, p.poolSize)
-	p.metrics = metrics.Get(workerCtx)
+	// create metrics context for all workers
+	metricsCtx := metrics.Make(egCtx, p.poolSize)
+	p.metrics = metrics.Get(metricsCtx) // store metrics in pool
 
-	// start all goroutines
+	// start all goroutines (workers)
 	for i := range p.poolSize {
-		p.eg.Go(p.workerProc(metrics.WithWorkerID(workerCtx, i), i, p.workersCh[i]))
+		withWorkerIdCtx := metrics.WithWorkerID(metricsCtx, i)
+		workerCh := p.sharedCh // use the shared channel by default
+		if p.chunkFn != nil {
+			// if chunkFn is set, use worker's channel to distribute records
+			workerCh = p.workersCh[i]
+		}
+		r := workerRequest[T]{inCh: workerCh, m: p.metrics, id: i}
+		p.eg.Go(p.workerProc(withWorkerIdCtx, r))
 	}
 
 	return nil
 }
 
-// workerProc is a worker goroutine function, reads from the input channel and processes records
-// update workerProc in pool.go
+type workerRequest[T any] struct {
+	inCh <-chan T
+	m    *metrics.Value
+	id   int
+}
 
-func (p *WorkerGroup[T]) workerProc(wCtx context.Context, id int, inCh chan []T) func() error {
+// workerProc is a worker goroutine function, reads from the input channel and processes records
+func (p *WorkerGroup[T]) workerProc(wCtx context.Context, r workerRequest[T]) func() error {
 	return func() error {
 		var lastErr error
 		var totalErrs int
-		lastActivity := time.Now()
 
-		m := metrics.Get(wCtx)
-
-		// initialize worker
-		var worker Worker[T]
-		initEndTmr := m.StartTimer(id, metrics.TimerInit)
-		if p.worker != nil {
-			worker = p.worker // use shared worker for stateless mode
-		} else {
-			worker = p.workerMaker() // create new worker instance for stateful mode
+		initEndTmr := r.m.StartTimer(r.id, metrics.TimerInit)
+		worker := p.worker
+		if p.workerMaker != nil {
+			worker = p.workerMaker()
 		}
 		initEndTmr()
-
-		for {
+		lastActivity := time.Now()
+		for v := range r.inCh {
+			waitTime := time.Since(lastActivity)
+			r.m.AddWaitTime(r.id, waitTime)
+			lastActivity = time.Now()
 			select {
-			case vv, ok := <-inCh:
-				if !ok { // input channel closed
-					wrapEndTmr := m.StartTimer(id, metrics.TimerWrap)
-					e := p.finalizeWorker(wCtx, id, worker)
-					wrapEndTmr()
-					if e != nil {
-						return e
-					}
-					if lastErr != nil {
-						return fmt.Errorf("total errors: %d, last error: %w", totalErrs, lastErr)
-					}
-					return nil
-				}
-
-				// track wait time - from last activity till now
-				waitTime := time.Since(lastActivity)
-				m.AddWaitTime(id, waitTime)
-
-				// read from the input slice
-				for _, v := range vv {
-					// even if not continue on error has to read from input channel all it has
-					if lastErr != nil && !p.continueOnError {
-						m.IncDropped(id)
-						continue
-					}
-
-					procEndTmr := m.StartTimer(id, metrics.TimerProc)
-					if err := worker.Do(wCtx, v); err != nil {
-						procEndTmr()
-						m.IncErrors(id)
-						e := fmt.Errorf("worker %d failed: %w", id, err)
-						if !p.continueOnError {
-							// close err.ch once. indicates to Submit what all other records can be ignored
-							p.err.Do(func() { close(p.err.ch) })
-						}
-						totalErrs++
-						lastErr = e // errors allowed to continue, capture the last error only
-						continue
-					}
-					procEndTmr()
-					m.IncProcessed(id)
-				}
-				lastActivity = time.Now()
-
-			case <-p.ctx.Done(): // parent context, passed by caller
-				return p.ctx.Err()
-
-			case <-wCtx.Done(): // worker context from errgroup
-				// triggered by another worker, kill only if errors not allowed
+			case <-wCtx.Done():
 				if !p.continueOnError {
 					return wCtx.Err()
 				}
+			default:
 			}
+
+			procEndTmr := r.m.StartTimer(r.id, metrics.TimerProc)
+			if err := worker.Do(wCtx, v); err != nil {
+				procEndTmr()
+				r.m.IncErrors(r.id)
+				totalErrs++
+				if !p.continueOnError {
+					return fmt.Errorf("worker %d failed: %w", r.id, err)
+				}
+				lastErr = fmt.Errorf("worker %d failed: %w", r.id, err)
+				continue
+			}
+			procEndTmr()
+			r.m.IncProcessed(r.id)
 		}
+
+		// handle completion
+		if p.completeFn != nil && lastErr == nil {
+			wrapFinTmr := r.m.StartTimer(r.id, metrics.TimerWrap)
+			if e := p.completeFn(wCtx, r.id, worker); e != nil {
+				lastErr = fmt.Errorf("complete func for %d failed: %w", r.id, e)
+			}
+			wrapFinTmr()
+		}
+
+		if lastErr != nil {
+			return fmt.Errorf("total errors: %d, last error: %w", totalErrs, lastErr)
+		}
+		return nil
 	}
 }
 
 // finWorker worker flushes records left in buffer to workers, called once for each worker
 // if completeFn allowed, will be called as well
 func (p *WorkerGroup[T]) finalizeWorker(ctx context.Context, id int, worker Worker[T]) (err error) {
-	// process all requests left in the not submitted yet buffer
-	for _, v := range p.buf[id] {
-		procEndTmr := p.metrics.StartTimer(id, metrics.TimerProc)
-		if e := worker.Do(ctx, v); e != nil {
-			procEndTmr()
-			p.metrics.IncErrors(id)
-			if !p.continueOnError {
-				return fmt.Errorf("worker %d failed in finalizer: %w", id, e)
-			}
-			continue
-		}
-		procEndTmr()
-		p.metrics.IncProcessed(id)
-	}
-
 	// call completeFn for given worker id
 	if p.completeFn != nil {
 		if e := p.completeFn(ctx, id, worker); e != nil {
 			err = fmt.Errorf("complete func for %d failed: %w", id, e)
 		}
 	}
-
 	return err
 }
 
 // Close pool. Has to be called by consumer as the indication of "all records submitted".
 // The call is blocking till all processing completed by workers. After this call poll can't be reused.
 // Returns an error if any happened during the run
-func (p *WorkerGroup[T]) Close(ctx context.Context) (err error) {
+func (p *WorkerGroup[T]) Close(ctx context.Context) error {
+	close(p.sharedCh)
 	for _, ch := range p.workersCh {
 		close(ch)
 	}
-
-	doneCh := make(chan error)
-	go func() {
-		doneCh <- p.eg.Wait()
-	}()
-
-	for {
-		select {
-		case err := <-doneCh:
-			return err
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
+	return p.eg.Wait()
 }
 
 // Wait till workers completed and the result channel closed. This can be used instead of the cursor
 // in case if the result channel can be ignored and the goal is to wait for the completion.
-func (p *WorkerGroup[T]) Wait(ctx context.Context) (err error) {
-	doneCh := make(chan error)
-	go func() {
-		doneCh <- p.eg.Wait()
-	}()
-
-	for {
-		select {
-		case err := <-doneCh:
-			return err
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
+func (p *WorkerGroup[T]) Wait(ctx context.Context) error {
+	return p.eg.Wait()
 }
 
 // Metrics returns combined metrics from all workers

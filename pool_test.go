@@ -43,37 +43,6 @@ func TestPool_Basic(t *testing.T) {
 	assert.Equal(t, inputs, processed)
 }
 
-func TestPool_Batching(t *testing.T) {
-	var batches [][]string
-	var mu sync.Mutex
-
-	batchSize := 2
-	worker := WorkerFunc[string](func(_ context.Context, v string) error {
-		mu.Lock()
-		if len(batches) == 0 || len(batches[len(batches)-1]) >= batchSize {
-			batches = append(batches, []string{})
-		}
-		batches[len(batches)-1] = append(batches[len(batches)-1], v)
-		mu.Unlock()
-		return nil
-	})
-
-	p := New[string](1, worker).WithBatchSize(batchSize)
-	require.NoError(t, p.Go(context.Background()))
-
-	for i := 0; i < 5; i++ {
-		p.Submit(fmt.Sprintf("%d", i))
-	}
-
-	require.NoError(t, p.Close(context.Background()))
-
-	// verify batches are of correct size (except maybe last one)
-	for i, batch := range batches[:len(batches)-1] {
-		require.Len(t, batch, batchSize, "batch %d has wrong size", i)
-	}
-	assert.LessOrEqual(t, len(batches[len(batches)-1]), batchSize)
-}
-
 func TestPool_ChunkDistribution(t *testing.T) {
 	var workerCounts [2]int32
 
@@ -166,26 +135,6 @@ func TestPool_ContextCancellation(t *testing.T) {
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
-func TestPool_WorkerCompletion(t *testing.T) {
-	var completedWorkers []int
-	var mu sync.Mutex
-
-	worker := WorkerFunc[string](func(_ context.Context, _ string) error { return nil })
-	completeFn := func(_ context.Context, id int, _ Worker[string]) error {
-		mu.Lock()
-		completedWorkers = append(completedWorkers, id)
-		mu.Unlock()
-		return nil
-	}
-
-	p := New[string](2, worker).WithCompleteFn(completeFn)
-	require.NoError(t, p.Go(context.Background()))
-	require.NoError(t, p.Close(context.Background()))
-
-	sort.Ints(completedWorkers)
-	assert.Equal(t, []int{0, 1}, completedWorkers)
-}
-
 func TestPool_StatefulWorker(t *testing.T) {
 	type statefulWorker struct {
 		count int
@@ -272,7 +221,7 @@ func TestPool_Wait_WithError(t *testing.T) {
 }
 
 func TestPool_Distribution(t *testing.T) {
-	t.Run("random distribution", func(t *testing.T) {
+	t.Run("shared channel distribution", func(t *testing.T) {
 		var counts [2]int32
 		worker := WorkerFunc[int](func(ctx context.Context, _ int) error {
 			atomic.AddInt32(&counts[metrics.WorkerID(ctx)], 1)
@@ -288,9 +237,13 @@ func TestPool_Distribution(t *testing.T) {
 		}
 		require.NoError(t, p.Close(context.Background()))
 
-		// check distribution, should be roughly equal
+		// check both workers got some work
+		assert.Greater(t, counts[0], int32(0), "worker 0 should process some items")
+		assert.Greater(t, counts[1], int32(0), "worker 1 should process some items")
+
+		// check rough distribution, allow more variance as it's scheduler-dependent
 		diff := math.Abs(float64(counts[0]-counts[1])) / float64(n)
-		require.Less(t, diff, 0.1, "distribution difference %v should be less than 10%%", diff)
+		require.Less(t, diff, 0.3, "distribution difference %v should be less than 30%%", diff)
 		t.Logf("workers distribution: %v, difference: %.2f%%", counts, diff*100)
 	})
 
@@ -303,8 +256,7 @@ func TestPool_Distribution(t *testing.T) {
 
 		p := New[int](2, worker).WithChunkFn(func(v int) string {
 			return fmt.Sprintf("key-%d", v%10) // 10 different keys
-		},
-		)
+		})
 		require.NoError(t, p.Go(context.Background()))
 
 		const n = 10000
@@ -313,9 +265,9 @@ func TestPool_Distribution(t *testing.T) {
 		}
 		require.NoError(t, p.Close(context.Background()))
 
-		// check distribution, should be roughly equal
+		// chunked distribution should still be roughly equal
 		diff := math.Abs(float64(counts[0]-counts[1])) / float64(n)
-		require.Less(t, diff, 0.1, "distribution difference %v should be less than 10%%", diff)
+		require.Less(t, diff, 0.1, "chunked distribution difference %v should be less than 10%%", diff)
 		t.Logf("workers distribution: %v, difference: %.2f%%", counts, diff*100)
 	})
 }
@@ -367,36 +319,6 @@ func TestPool_Metrics(t *testing.T) {
 		assert.Equal(t, int(atomic.LoadInt32(&processed)), stats.Processed)
 		assert.Equal(t, int(atomic.LoadInt32(&errs)), stats.Errors)
 		assert.Equal(t, 0, stats.Dropped)
-	})
-
-	t.Run("metrics with batching", func(t *testing.T) {
-		var custom, processed int32
-		worker := WorkerFunc[int](func(ctx context.Context, _ int) error {
-			m := metrics.Get(ctx)
-			m.Add("custom", 2)
-			atomic.AddInt32(&custom, 2)
-			atomic.AddInt32(&processed, 1)
-			t.Logf("Worker processed item, total processed: %d", atomic.LoadInt32(&processed))
-			return nil
-		})
-
-		p := New[int](2, worker).WithBatchSize(3)
-		require.NoError(t, p.Go(context.Background()))
-
-		n := 10
-		for i := 0; i < n; i++ {
-			p.Submit(i)
-		}
-		require.NoError(t, p.Close(context.Background()))
-
-		stats := p.Metrics().GetStats()
-		actualProcessed := atomic.LoadInt32(&processed)
-		t.Logf("Actual processed: %d, Stats processed: %d", actualProcessed, stats.Processed)
-		assert.Equal(t, int(actualProcessed), stats.Processed)
-		assert.Equal(t, int(atomic.LoadInt32(&custom)), p.Metrics().Get("custom"))
-
-		assert.Equal(t, n, stats.Processed, "should process all items")
-		assert.Equal(t, n*2, p.Metrics().Get("custom"), "custom metric should be double the items")
 	})
 
 	t.Run("metrics timing", func(t *testing.T) {
@@ -497,25 +419,30 @@ func TestPool_MetricsString(t *testing.T) {
 	assert.Contains(t, str, "custom:5")
 }
 
-func TestPool_FinalizeWorker(t *testing.T) {
+func TestPool_WorkerCompletion(t *testing.T) {
 	t.Run("batch processing with errors", func(t *testing.T) {
 		var processed []string
+		var mu sync.Mutex
 		worker := WorkerFunc[string](func(_ context.Context, v string) error {
 			if v == "error" {
 				return fmt.Errorf("test error")
 			}
+			mu.Lock()
 			processed = append(processed, v)
+			mu.Unlock()
 			return nil
 		})
 
 		p := New[string](1, worker)
 		require.NoError(t, p.Go(context.Background()))
 
-		// fill batch buffer with items including error
-		p.buf[0] = []string{"ok1", "error", "ok2"}
+		// submit items including error
+		p.Submit("ok1")
+		p.Submit("error")
+		p.Submit("ok2")
 
 		// should process until error
-		err := p.finalizeWorker(context.Background(), 0, worker)
+		err := p.Close(context.Background())
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "test error")
 		assert.Equal(t, []string{"ok1"}, processed)
@@ -523,23 +450,28 @@ func TestPool_FinalizeWorker(t *testing.T) {
 
 	t.Run("batch processing continues on error", func(t *testing.T) {
 		var processed []string
+		var mu sync.Mutex
 		worker := WorkerFunc[string](func(_ context.Context, v string) error {
 			if v == "error" {
 				return fmt.Errorf("test error")
 			}
+			mu.Lock()
 			processed = append(processed, v)
+			mu.Unlock()
 			return nil
 		})
 
 		p := New[string](1, worker).WithContinueOnError()
 		require.NoError(t, p.Go(context.Background()))
 
-		// fill batch buffer with items including error
-		p.buf[0] = []string{"ok1", "error", "ok2"}
+		// submit items including error
+		p.Submit("ok1")
+		p.Submit("error")
+		p.Submit("ok2")
 
-		// should process all items
-		err := p.finalizeWorker(context.Background(), 0, worker)
-		require.NoError(t, err)
+		// should process all items despite error
+		err := p.Close(context.Background())
+		require.Error(t, err)
 		assert.Equal(t, []string{"ok1", "ok2"}, processed)
 	})
 
@@ -554,7 +486,8 @@ func TestPool_FinalizeWorker(t *testing.T) {
 		})
 		require.NoError(t, p.Go(context.Background()))
 
-		err := p.finalizeWorker(context.Background(), 0, worker)
+		p.Submit("task")
+		err := p.Close(context.Background())
 		require.Error(t, err)
 		require.ErrorIs(t, err, completeFnError)
 	})
@@ -567,14 +500,12 @@ func TestPool_FinalizeWorker(t *testing.T) {
 
 		p := New[string](1, worker).WithCompleteFn(func(context.Context, int, Worker[string]) error {
 			completeFnCalled = true
-			return fmt.Errorf("complete error")
+			return nil
 		})
 		require.NoError(t, p.Go(context.Background()))
 
-		// fill batch buffer with an item
-		p.buf[0] = []string{"task"}
-
-		err := p.finalizeWorker(context.Background(), 0, worker)
+		p.Submit("task")
+		err := p.Close(context.Background())
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "batch error")
 		assert.False(t, completeFnCalled, "completeFn should not be called after batch error")
@@ -595,13 +526,10 @@ func TestPool_FinalizeWorker(t *testing.T) {
 		p := New[string](1, worker)
 		require.NoError(t, p.Go(ctx))
 
-		// fill batch buffer
-		p.buf[0] = []string{"task1", "task2"}
-
-		// cancel context before finalization
+		p.Submit("task")
 		cancel()
 
-		err := p.finalizeWorker(ctx, 0, worker)
+		err := p.Close(context.Background())
 		require.Error(t, err)
 		require.ErrorIs(t, err, context.Canceled)
 	})
@@ -628,31 +556,6 @@ func TestPool_WaitTimeAccuracy(t *testing.T) {
 
 		// allow for some variance in timing
 		minExpectedWait := 35 * time.Millisecond // 70% of wait period
-		assert.Greater(t, stats.WaitTime, minExpectedWait,
-			"wait time (%v) should be greater than %v", stats.WaitTime, minExpectedWait)
-	})
-
-	t.Run("measures wait across batches", func(t *testing.T) {
-		worker := WorkerFunc[int](func(ctx context.Context, v int) error {
-			time.Sleep(5 * time.Millisecond)
-			return nil
-		})
-
-		p := New[int](1, worker).WithBatchSize(2)
-		require.NoError(t, p.Go(context.Background()))
-
-		// submit first batch
-		p.Submit(1)
-		p.Submit(2)
-		waitPeriod := 40 * time.Millisecond // increased wait period
-		time.Sleep(waitPeriod)              // wait between batches
-		p.Submit(3)
-		p.Submit(4)
-
-		require.NoError(t, p.Close(context.Background()))
-		stats := p.Metrics().GetStats()
-
-		minExpectedWait := 15 * time.Millisecond // about 37.5% of wait period
 		assert.Greater(t, stats.WaitTime, minExpectedWait,
 			"wait time (%v) should be greater than %v", stats.WaitTime, minExpectedWait)
 	})

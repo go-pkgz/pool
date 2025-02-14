@@ -46,42 +46,6 @@ func Example_basic() {
 	// processed: 3
 }
 
-func Example_withBatching() {
-	// collect output to ensure deterministic order
-	var out []string
-	var mu sync.Mutex
-
-	worker := WorkerFunc[int](func(_ context.Context, v int) error {
-		mu.Lock()
-		out = append(out, fmt.Sprintf("batch item: %d", v))
-		mu.Unlock()
-		return nil
-	})
-
-	p := New[int](2, worker).WithBatchSize(2)
-	p.Go(context.Background())
-
-	// submit items - they will be processed in batches
-	for i := 1; i <= 5; i++ {
-		p.Submit(i)
-	}
-
-	p.Close(context.Background())
-
-	// print collected output in sorted order
-	sort.Strings(out)
-	for _, s := range out {
-		fmt.Println(s)
-	}
-
-	// Output:
-	// batch item: 1
-	// batch item: 2
-	// batch item: 3
-	// batch item: 4
-	// batch item: 5
-}
-
 func Example_withRouting() {
 	// collect output with sync.Map for thread safety
 	var out sync.Map
