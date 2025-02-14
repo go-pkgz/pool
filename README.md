@@ -421,11 +421,11 @@ p := pool.New[string](2, worker).
 ```
 
 Available options:
-- `WithBatchSize(size int)` - enables batch processing, accumulating items before sending to workers
-- `WithWorkerChanSize(size int)` - sets buffer size for worker channels
-- `WithChunkFn(fn func(T) string)` - controls work distribution by key
-- `WithContinueOnError()` - continues processing on errors
-- `WithCompleteFn(fn func(ctx, id, worker))` - called on worker completion
+- `WithBatchSize(size int)` - enables batch processing, accumulating items before sending to workers (default: 10)
+- `WithWorkerChanSize(size int)` - sets buffer size for worker channels (default: 1)
+- `WithChunkFn(fn func(T) string)` - controls work distribution by key (default: none, random distribution)
+- `WithContinueOnError()` - continues processing on errors (default: false)
+- `WithCompleteFn(fn func(ctx, id, worker))` - called on worker completion (default: none)
 
 ### Alternative pool implementations
 
