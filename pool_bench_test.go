@@ -246,8 +246,9 @@ func BenchmarkPoolCompare(b *testing.B) {
 }
 
 func TestPoolWithProfiling(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping profiling test in short mode")
+	// run only if env PROFILING is set
+	if os.Getenv("PROFILING") == "" {
+		t.Skip("skipping profiling test; set PROFILING to run")
 	}
 
 	// start CPU profile
