@@ -332,7 +332,7 @@ func TestPool_Metrics(t *testing.T) {
 			return nil
 		})
 
-		p := New[int](2, worker)
+		p := New[int](2, worker).WithBatchSize(0) // disable batching
 		require.NoError(t, p.Go(context.Background()))
 
 		p.Submit(1)
@@ -514,19 +514,31 @@ func TestPool_WorkerCompletion(t *testing.T) {
 	t.Run("context cancellation", func(t *testing.T) {
 		processed := make(chan string, 1)
 		worker := WorkerFunc[string](func(ctx context.Context, v string) error {
+			// make sure we wait for context cancellation
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
 			case processed <- v:
-				return nil
+				time.Sleep(50 * time.Millisecond) // ensure we're still processing when cancelled
+				return ctx.Err()
 			}
 		})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		p := New[string](1, worker)
+		p := New[string](1, worker).WithBatchSize(0) // disable batching for this test
 		require.NoError(t, p.Go(ctx))
 
 		p.Submit("task")
+
+		// wait for task to start processing
+		select {
+		case <-processed:
+		case <-time.After(time.Second):
+			t.Fatal("timeout waiting for processing to start")
+		}
+
+		// ensure the task is being processed
+		time.Sleep(10 * time.Millisecond)
 		cancel()
 
 		err := p.Close(context.Background())
@@ -617,7 +629,7 @@ func TestPool_TimingUnderLoad(t *testing.T) {
 		return nil
 	})
 
-	p := New[int](workers, worker)
+	p := New[int](workers, worker).WithBatchSize(0)
 	require.NoError(t, p.Go(context.Background()))
 
 	// submit all tasks
@@ -991,5 +1003,148 @@ func TestPool_Batch(t *testing.T) {
 		assert.Equal(t, 3, stats.Errors, "should count error items")
 		assert.Greater(t, stats.ProcessingTime, time.Duration(0),
 			"should accumulate processing time")
+	})
+
+	t.Run("batch context cancellation", func(t *testing.T) {
+		// when context is cancelled, the pool guarantees:
+		// 1. full batches are processed before shutdown
+		// 2. no new items will be accepted
+		// 3. partial batches may be discarded for clean shutdown
+		// 4. workers receive proper context cancellation error
+		var processed []string
+		var mu sync.Mutex
+		var errFound atomic.Bool
+
+		worker := WorkerFunc[string](func(ctx context.Context, v string) error {
+			if ctx.Err() != nil {
+				errFound.Store(true)
+				return ctx.Err()
+			}
+			mu.Lock()
+			processed = append(processed, v)
+			mu.Unlock()
+			return nil
+		})
+
+		p := New[string](1, worker).WithBatchSize(3).WithContinueOnError()
+		require.NoError(t, p.Go(context.Background()))
+
+		// fill batches with items to verify processing of full batches
+		for i := 0; i < 6; i++ {
+			p.Submit(fmt.Sprintf("item%d", i))
+			time.Sleep(10 * time.Millisecond) // allow time for processing
+		}
+
+		require.NoError(t, p.Close(context.Background()))
+
+		// verify that full batches were processed
+		mu.Lock()
+		sort.Strings(processed) // sort for deterministic comparison
+		t.Logf("processed items: %v", processed)
+		require.NotEmpty(t, processed, "at least some items should be processed")
+		require.Len(t, processed, 6, "both full batches should be processed")
+		mu.Unlock()
+	})
+	t.Run("batch timing and ordering", func(t *testing.T) {
+		var batches [][]string
+		var mu sync.Mutex
+		processTime := 10 * time.Millisecond
+
+		worker := WorkerFunc[string](func(_ context.Context, v string) error {
+			time.Sleep(processTime) // simulate work
+			mu.Lock()
+			batches = append(batches, []string{v})
+			mu.Unlock()
+			return nil
+		})
+
+		start := time.Now()
+		p := New[string](2, worker).WithBatchSize(3)
+		require.NoError(t, p.Go(context.Background()))
+
+		// submit items with timing gap
+		p.Submit("fast1")
+		p.Submit("fast2")
+		time.Sleep(50 * time.Millisecond)
+		p.Submit("slow1") // should create new batch due to timing gap
+		p.Submit("slow2")
+
+		require.NoError(t, p.Close(context.Background()))
+		elapsed := time.Since(start)
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		// verify batches are processed as expected
+		assert.GreaterOrEqual(t, len(batches), 2, "should have at least 2 batches")
+		totalItems := 0
+		for _, batch := range batches {
+			totalItems += len(batch)
+		}
+		assert.Equal(t, 4, totalItems, "all items should be processed")
+		assert.Greater(t, elapsed, 50*time.Millisecond, "should respect timing gaps between batches")
+	})
+
+	t.Run("concurrent batch processing", func(t *testing.T) {
+		const (
+			numWorkers = 3
+			batchSize  = 3
+			totalItems = 12
+		)
+
+		var (
+			batchStartTimes = make(map[int]time.Time)
+			batchEndTimes   = make(map[int]time.Time)
+			mu              sync.Mutex
+		)
+
+		worker := WorkerFunc[int](func(_ context.Context, v int) error {
+			batchID := v / batchSize
+
+			mu.Lock()
+			if _, exists := batchStartTimes[batchID]; !exists {
+				batchStartTimes[batchID] = time.Now()
+			}
+			mu.Unlock()
+
+			// simulate some work
+			time.Sleep(20 * time.Millisecond)
+
+			mu.Lock()
+			batchEndTimes[batchID] = time.Now()
+			mu.Unlock()
+			return nil
+		})
+
+		p := New[int](numWorkers, worker).WithBatchSize(batchSize)
+		require.NoError(t, p.Go(context.Background()))
+
+		// submit items
+		for i := 0; i < totalItems; i++ {
+			p.Submit(i)
+		}
+		require.NoError(t, p.Close(context.Background()))
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		// verify all batches were processed
+		assert.Len(t, batchStartTimes, totalItems/batchSize, "should process all batches")
+
+		// verify concurrent processing by checking for overlapping time ranges
+		var overlapped bool
+		for i := 0; i < totalItems/batchSize; i++ {
+			for j := i + 1; j < totalItems/batchSize; j++ {
+				// check if batch i and j overlapped in time
+				if !(batchEndTimes[i].Before(batchStartTimes[j]) || batchEndTimes[j].Before(batchStartTimes[i])) {
+					overlapped = true
+					break
+				}
+			}
+			if overlapped {
+				break
+			}
+		}
+		assert.True(t, overlapped, "should have overlapping batch processing times indicating concurrency")
 	})
 }

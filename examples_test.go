@@ -138,7 +138,7 @@ func Example_withContext() {
 		return ctx.Err()
 	})
 
-	p := New[int](1, worker)
+	p := New[int](1, worker).WithBatchSize(0) // disable batching
 	p.Go(ctx)
 	p.Submit(1)
 

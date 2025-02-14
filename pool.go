@@ -12,7 +12,8 @@ import (
 	"github.com/go-pkgz/pool/metrics"
 )
 
-// WorkerGroup is a simple case of flow with a single stage only running a common function in workers pool.
+// WorkerGroup represents a pool of workers processing items in parallel.
+// Supports both direct item processing and batching modes.
 type WorkerGroup[T any] struct {
 	poolSize        int            // number of workers (goroutines)
 	workerChanSize  int            // size of worker channels
@@ -58,8 +59,8 @@ type CompleteFn[T any] func(ctx context.Context, id int, worker Worker[T]) error
 // Send func called by worker code to publish results
 type Send[T any] func(val T) error
 
-// New creates a worker pool with a shared, stateless worker.
-// Size defines the number of goroutines (workers) processing requests.
+// New creates a worker pool with a shared worker instance.
+// All goroutines share the same worker, suitable for stateless processing.
 func New[T any](size int, worker Worker[T]) *WorkerGroup[T] {
 	if size < 1 {
 		size = 1
@@ -69,7 +70,7 @@ func New[T any](size int, worker Worker[T]) *WorkerGroup[T] {
 		poolSize:       size,
 		worker:         worker,
 		workerChanSize: 1,
-		batchSize:      0,
+		batchSize:      10, // default batch size
 
 		// initialize channels
 		workersCh:     make([]chan T, size),
@@ -88,9 +89,8 @@ func New[T any](size int, worker Worker[T]) *WorkerGroup[T] {
 	return res
 }
 
-// NewStateful creates a worker pool with a separate worker instance for each goroutine.
-// Size defines number of goroutines (workers) processing requests.
-// Maker function is called for each goroutine to create a new worker instance.
+// NewStateful creates a worker pool where each goroutine gets its own worker instance.
+// Suitable for operations requiring state (e.g., database connections).
 func NewStateful[T any](size int, maker func() Worker[T]) *WorkerGroup[T] {
 	if size < 1 {
 		size = 1
@@ -100,7 +100,7 @@ func NewStateful[T any](size int, maker func() Worker[T]) *WorkerGroup[T] {
 		poolSize:       size,
 		workerMaker:    maker,
 		workerChanSize: 1,
-		batchSize:      0,
+		batchSize:      10, // default batch size
 		ctx:            context.Background(),
 
 		// initialize channels
@@ -120,8 +120,8 @@ func NewStateful[T any](size int, maker func() Worker[T]) *WorkerGroup[T] {
 	return res
 }
 
-// WithWorkerChanSize sets the size of the worker channel. Each worker has its own channel
-// to receive values from the pool and process them.
+// WithWorkerChanSize sets channel buffer size for each worker.
+// Larger sizes can help with bursty workloads but increase memory usage.
 // Default: 1
 func (p *WorkerGroup[T]) WithWorkerChanSize(size int) *WorkerGroup[T] {
 	p.workerChanSize = size
@@ -131,17 +131,18 @@ func (p *WorkerGroup[T]) WithWorkerChanSize(size int) *WorkerGroup[T] {
 	return p
 }
 
-// WithCompleteFn sets the complete function, called when the pool is complete.
-// This is useful for cleanup or finalization tasks.
-// Default: none
+// WithCompleteFn sets callback executed on worker completion.
+// Useful for cleanup or finalization of worker resources.
+// Default: none (disabled)
 func (p *WorkerGroup[T]) WithCompleteFn(fn CompleteFn[T]) *WorkerGroup[T] {
 	p.completeFn = fn
 	return p
 }
 
-// WithChunkFn sets the chunk function, used to distribute records to workers.
-// This is useful to distribute records to workers predictably.
-// Default: none
+// WithChunkFn enables predictable item distribution.
+// Items with the same key (returned by fn) are processed by the same worker.
+// Useful for maintaining order within groups of related items.
+// Default: none (random distribution)
 func (p *WorkerGroup[T]) WithChunkFn(fn func(T) string) *WorkerGroup[T] {
 	p.chunkFn = fn
 	return p
@@ -154,9 +155,10 @@ func (p *WorkerGroup[T]) WithContinueOnError() *WorkerGroup[T] {
 	return p
 }
 
-// WithBatchSize sets the batch size for accumulating items.
-// If size > 0, items will be accumulated into batches before processing.
-// Default: 0 (no batching)
+// WithBatchSize enables item batching with specified size.
+// Items are accumulated until batch is full before processing.
+// Set to 0 to disable batching.
+// Default: 10
 func (p *WorkerGroup[T]) WithBatchSize(size int) *WorkerGroup[T] {
 	p.batchSize = size
 	if size > 0 {
@@ -168,9 +170,16 @@ func (p *WorkerGroup[T]) WithBatchSize(size int) *WorkerGroup[T] {
 	return p
 }
 
-// Submit record to pool, can be blocked if worker channels are full.
-// The call is ignored if the pool is stopping due to an error in non-continueOnError mode.
+// Submit adds an item to the pool for processing.
+// May block if worker channels are full.
 func (p *WorkerGroup[T]) Submit(v T) {
+	// check context early
+	select {
+	case <-p.ctx.Done():
+		return // don't submit if context is cancelled
+	default:
+	}
+
 	if p.batchSize == 0 {
 		// direct submission mode
 		if p.chunkFn == nil {
@@ -197,18 +206,36 @@ func (p *WorkerGroup[T]) Submit(v T) {
 	// add to accumulator
 	p.accumulators[id] = append(p.accumulators[id], v)
 
-	// flush if batch is full
-	if len(p.accumulators[id]) >= p.batchSize {
+	// check if we should flush
+	var shouldFlush bool
+	select {
+	case <-p.ctx.Done():
+		shouldFlush = true // always flush on context cancellation
+	default:
+		// in normal case, flush only when batch is full
+		shouldFlush = len(p.accumulators[id]) >= p.batchSize
+	}
+
+	if shouldFlush && len(p.accumulators[id]) > 0 {
 		if p.chunkFn == nil {
-			p.sharedBatchCh <- p.accumulators[id]
+			select {
+			case p.sharedBatchCh <- p.accumulators[id]:
+			case <-p.ctx.Done(): // handle case where channel send would block
+				return
+			}
 		} else {
-			p.workerBatchCh[id] <- p.accumulators[id]
+			select {
+			case p.workerBatchCh[id] <- p.accumulators[id]:
+			case <-p.ctx.Done():
+				return
+			}
 		}
 		p.accumulators[id] = make([]T, 0, p.batchSize)
 	}
 }
 
-// Go activates worker pool
+// Go activates the pool and starts worker goroutines.
+// Must be called before submitting items.
 func (p *WorkerGroup[T]) Go(ctx context.Context) error {
 	if p.activated {
 		return fmt.Errorf("workers poll already activated")

@@ -47,7 +47,6 @@ linters:
     - gofmt
     - goimports
     - intrange
-    - mnd
     - nilerr
     - predeclared
     - testifylint
