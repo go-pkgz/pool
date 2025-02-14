@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"runtime/pprof"
 	"strconv"
@@ -22,7 +23,7 @@ func task(n int) int {
 }
 
 // benchTask is a somewhat realistic task that combines CPU work with memory allocation
-func benchTask(size int) []int {
+func benchTask(size int) []int { //nolint:unparam // size is used in the benchmark
 	res := make([]int, 0, size)
 	for i := 0; i < size; i++ {
 		res = append(res, task(1))
@@ -60,7 +61,7 @@ func BenchmarkPool(b *testing.B) {
 
 func BenchmarkPoolCompare(b *testing.B) {
 	workers := []int{16, 8, 4, 1}
-	iterations := 50
+	iterations := 500
 
 	for _, w := range workers {
 		prefix := "workers=" + strconv.Itoa(w)
@@ -114,6 +115,61 @@ func BenchmarkPoolCompare(b *testing.B) {
 				p.Wait(ctx)
 			}
 		})
+
+		// Test batched pool implementation
+		batchSizes := []int{0, 5, 10, 20}
+		for _, batchSize := range batchSizes {
+			b.Run(fmt.Sprintf("%s/pool-batch-%d", prefix, batchSize), func(b *testing.B) {
+				worker := WorkerFunc[int](func(context.Context, int) error {
+					benchTask(w)
+					return nil
+				})
+				ctx := context.Background()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					b.StopTimer()
+					p := New[int](w, worker).
+						WithWorkerChanSize(100).
+						WithBatchSize(batchSize)
+					p.Go(ctx)
+					b.StartTimer()
+
+					go func() {
+						for j := 0; j < iterations; j++ {
+							p.Submit(j)
+						}
+						p.Close(ctx)
+					}()
+					p.Wait(ctx)
+				}
+			})
+
+			// Test batched pool with chunking
+			b.Run(fmt.Sprintf("%s/pool-batch-%d-chunked", prefix, batchSize), func(b *testing.B) {
+				worker := WorkerFunc[int](func(context.Context, int) error {
+					benchTask(w)
+					return nil
+				})
+				ctx := context.Background()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					b.StopTimer()
+					p := New[int](w, worker).WithWorkerChanSize(100).WithBatchSize(batchSize).WithChunkFn(func(v int) string {
+						return strconv.Itoa(v % w)
+					})
+					p.Go(ctx)
+					b.StartTimer()
+
+					go func() {
+						for j := 0; j < iterations; j++ {
+							p.Submit(j)
+						}
+						p.Close(ctx)
+					}()
+					p.Wait(ctx)
+				}
+			})
+		}
 
 		// Test errgroup implementation
 		b.Run(prefix+"/errgroup", func(b *testing.B) {

@@ -843,3 +843,153 @@ func TestMiddleware_Practical(t *testing.T) {
 			"should measure time greater than 1ms")
 	})
 }
+
+func TestPool_Batch(t *testing.T) {
+	t.Run("basic batching", func(t *testing.T) {
+		var batches [][]string
+		var mu sync.Mutex
+
+		worker := WorkerFunc[string](func(_ context.Context, v string) error {
+			mu.Lock()
+			defer mu.Unlock()
+
+			// start new batch if no batches or current batch is full
+			if len(batches) == 0 || len(batches[len(batches)-1]) >= 3 {
+				batches = append(batches, []string{v})
+				return nil
+			}
+
+			// add to current batch
+			batches[len(batches)-1] = append(batches[len(batches)-1], v)
+			return nil
+		})
+
+		p := New[string](2, worker).WithBatchSize(3)
+		require.NoError(t, p.Go(context.Background()))
+
+		// submit 8 items - should make 2 full batches and 1 partial
+		for i := 0; i < 8; i++ {
+			p.Submit(fmt.Sprintf("v%d", i))
+		}
+		require.NoError(t, p.Close(context.Background()))
+
+		mu.Lock()
+		defer mu.Unlock()
+		require.Len(t, batches, 3, "should have 3 batches")
+		assert.Len(t, batches[0], 3, "first batch should be full")
+		assert.Len(t, batches[1], 3, "second batch should be full")
+		assert.Len(t, batches[2], 2, "last batch should have remaining items")
+	})
+
+	t.Run("batching with chunk function", func(t *testing.T) {
+		var processed sync.Map
+
+		worker := WorkerFunc[string](func(_ context.Context, v string) error {
+			key := v[:1] // first letter is the chunk key
+			val, _ := processed.LoadOrStore(key, []string{})
+			items := val.([]string)
+			items = append(items, v)
+			processed.Store(key, items)
+			return nil
+		})
+
+		p := New[string](2, worker).
+			WithBatchSize(2).
+			WithChunkFn(func(v string) string { return v[:1] }) // chunk by first letter
+
+		require.NoError(t, p.Go(context.Background()))
+
+		// submit items that should go to different workers
+		items := []string{"a1", "a2", "a3", "b1", "b2", "b3"}
+		for _, item := range items {
+			p.Submit(item)
+		}
+		require.NoError(t, p.Close(context.Background()))
+
+		// verify items are grouped by first letter
+		aItems, _ := processed.Load("a")
+		bItems, _ := processed.Load("b")
+		assert.Len(t, aItems.([]string), 3, "should have 3 'a' items")
+		assert.Len(t, bItems.([]string), 3, "should have 3 'b' items")
+	})
+
+	t.Run("error handling in batch", func(t *testing.T) {
+		var processed []string
+		var mu sync.Mutex
+
+		worker := WorkerFunc[string](func(_ context.Context, v string) error {
+			if strings.HasPrefix(v, "err") {
+				return fmt.Errorf("error processing %s", v)
+			}
+			mu.Lock()
+			processed = append(processed, v)
+			mu.Unlock()
+			return nil
+		})
+
+		// test without continue on error
+		p1 := New[string](1, worker).WithBatchSize(2)
+		require.NoError(t, p1.Go(context.Background()))
+
+		p1.Submit("ok1")
+		p1.Submit("err1")
+		p1.Submit("ok2") // should not be processed due to error
+
+		err := p1.Close(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "error processing err1")
+
+		mu.Lock()
+		assert.Equal(t, []string{"ok1"}, processed)
+		mu.Unlock()
+
+		// test with continue on error
+		processed = nil // reset
+		p2 := New[string](1, worker).WithBatchSize(2).WithContinueOnError()
+		require.NoError(t, p2.Go(context.Background()))
+
+		p2.Submit("ok3")
+		p2.Submit("err2")
+		p2.Submit("ok4")
+
+		err = p2.Close(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "error processing err2")
+
+		mu.Lock()
+		assert.Equal(t, []string{"ok3", "ok4"}, processed)
+		mu.Unlock()
+	})
+
+	t.Run("batch metrics", func(t *testing.T) {
+		worker := WorkerFunc[string](func(_ context.Context, v string) error {
+			time.Sleep(time.Millisecond) // ensure some processing time
+			if strings.HasPrefix(v, "err") {
+				return fmt.Errorf("error processing %s", v)
+			}
+			return nil
+		})
+
+		p := New[string](1, worker).WithBatchSize(3).WithContinueOnError()
+		require.NoError(t, p.Go(context.Background()))
+
+		// submit exactly 9 items: 6 good (ok) and 3 errors (err)
+		items := []string{
+			"ok1", "ok2", "err0", // batch 1
+			"ok3", "ok4", "err1", // batch 2
+			"ok5", "ok6", "err2", // batch 3
+		}
+		for _, item := range items {
+			p.Submit(item)
+		}
+
+		err := p.Close(context.Background())
+		require.Error(t, err) // should have errors but continue
+
+		stats := p.Metrics().GetStats()
+		assert.Equal(t, 6, stats.Processed, "should process all ok items")
+		assert.Equal(t, 3, stats.Errors, "should count error items")
+		assert.Greater(t, stats.ProcessingTime, time.Duration(0),
+			"should accumulate processing time")
+	})
+}
