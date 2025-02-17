@@ -465,6 +465,83 @@ Available options:
 - `WithWorkerCompleteFn(fn func(ctx, id, worker))` - called on worker completion (default: none)
 - `WithPoolCompleteFn(fn func(ctx))` - called on pool completion, i.e., when all workers have completed (default: none)
 
+
+## Performance
+
+The pool package is designed for high performance and efficiency. Benchmarks show that it consistently outperforms both the standard `errgroup`-based approach and traditional goroutine patterns with shared channels.
+
+### Benchmark Results
+
+Tests running 1,000,000 tasks with 8 workers on Apple M4 Max:
+
+```
+errgroup:                                     1.878s
+pool (default):                               1.213s (~35% faster)
+pool (chan size=100):                         1.199s
+pool (chan size=100, batch size=100):         1.105s (~41% faster)
+pool (with chunking):                         1.113s
+```
+
+Detailed benchmark comparison (lower is better):
+```
+errgroup:                                     18.56ms/op
+pool (default):                               12.29ms/op
+pool (chan size=100):                         12.35ms/op
+pool (batch size=100):                        11.22ms/op
+pool (with batching and chunking):            11.43ms/op
+```
+
+### Why Pool is Faster
+
+1. **Efficient Channel Usage**
+   - The pool uses dedicated channels per worker when chunking is enabled
+   - Default channel buffer size is optimized for common use cases
+   - Minimizes channel contention compared to shared channel approaches
+
+2. **Smart Batching**
+   - Reduces channel communication overhead by processing multiple items at once
+   - Default batch size of 10 provides good balance between latency and throughput
+   - Accumulators pre-allocated with capacity to minimize memory allocations
+
+3. **Work Distribution**
+   - Optional chunking ensures related tasks go to the same worker
+   - Improves cache locality and reduces cross-worker coordination
+   - Hash-based distribution provides good load balancing
+
+4. **Resource Management**
+   - Workers are pre-initialized and reused
+   - No per-task goroutine creation overhead
+   - Efficient cleanup and resource handling
+
+### Configuration Impact
+
+- **Default Settings**: Out of the box, the pool is ~35% faster than errgroup
+- **Channel Buffering**: Increasing channel size can help with bursty workloads
+- **Batching**: Adding batching improves performance by another ~6%
+- **Chunking**: Optional chunking has minimal overhead when enabled
+
+### When to Use What
+
+1. **Default Settings** - Good for most use cases
+   ```go
+   p := pool.New[string](5, worker)
+   ```
+
+2. **High-Throughput** - For heavy workloads with many items
+   ```go
+   p := pool.New[string](5, worker).
+       WithWorkerChanSize(100).
+       WithBatchSize(100)
+   ```
+
+3. **Related Items** - When items need to be processed by the same worker
+   ```go
+   p := pool.New[string](5, worker).
+       WithChunkFn(func(v string) string {
+           return v[:1] // group by first character
+       })
+   ```
+   
 ### Alternative pool implementations
 
 - [pond](https://github.com/alitto/pond) - pond is a minimalistic and high-performance Go library designed to elegantly manage concurrent tasks.
