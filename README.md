@@ -449,8 +449,8 @@ Important notes:
 Configure pool behavior using With methods:
 
 ```go
-p := pool.New[string](2, worker).   
-	WithBatchSize(10).             // process items in batches
+p := pool.New[string](2, worker).  // pool with 2 workers
+    WithBatchSize(10).             // process items in batches
     WithWorkerChanSize(5).         // set worker channel buffer size
     WithChunkFn(chunkFn).          // control work distribution
     WithContinueOnError().         // don't stop on errors
@@ -465,7 +465,103 @@ Available options:
 - `WithWorkerCompleteFn(fn func(ctx, id, worker))` - called on worker completion (default: none)
 - `WithPoolCompleteFn(fn func(ctx))` - called on pool completion, i.e., when all workers have completed (default: none)
 
+## Collector
 
+The Collector helps manage asynchronous results from pool workers in a synchronous way. It's particularly useful when you need to gather and process results from worker's processing. The Collector uses Go generics and is compatible with any result type.
+
+### Features
+- Generic implementation supporting any result type
+- Context awareness with graceful cancellation
+- Buffered collection with configurable size
+- Built-in iterator pattern
+- Ability to collect all results at once
+
+### Example Usage
+
+```go
+// create a collector for results with buffer of 10
+collector := pool.NewCollector[string](ctx, 10)
+
+// worker submits results to collector
+worker := pool.WorkerFunc[int](func(ctx context.Context, v int) error {
+    result := process(v)
+    collector.Submit(result)
+    return nil
+})
+
+// create and run pool
+p := pool.New[int](5, worker)
+require.NoError(t, p.Go(ctx))
+
+// submit items
+for i := 0; i < 100; i++ {
+    p.Submit(i)
+}
+p.Close(ctx)
+
+// Option 1: process results as they arrive with iterator
+for result, err := range collector.Iter() {
+    if err != nil {
+        return err // context cancelled or other error
+    }
+    // process result
+}
+
+// Option 2: get all results at once
+results, err := collector.All()
+if err != nil {
+    return err
+}
+// use results slice
+```
+
+### API Reference
+
+```go
+// create new collector
+collector := pool.NewCollector[ResultType](ctx, bufferSize)
+
+// submit result to collector
+collector.Submit(result)
+
+// close collector when done submitting
+collector.Close()
+
+// iterate over results
+for result, err := range collector.Iter() {
+    // process result
+}
+
+// get all results
+results, err := collector.All()
+```
+
+### Best Practices
+
+1. **Buffer Size**: Choose based on expected throughput and memory constraints
+   - Too small: may block workers
+   - Too large: may use excessive memory
+
+2. **Error Handling**: Always check error from iterator
+   ```go
+   for result, err := range collector.Iter() {
+       if err != nil {
+           // handle context cancellation
+           return err
+       }
+   }
+   ```
+
+3. **Context Usage**: Pass context that matches pool's lifecycle
+   ```go
+   collector := pool.NewCollector[Result](poolCtx, size)
+   ```
+
+4. **Cleanup**: Close collector when done submitting
+   ```go
+   defer collector.Close()
+   ```
+   
 ## Performance
 
 The pool package is designed for high performance and efficiency. Benchmarks show that it consistently outperforms both the standard `errgroup`-based approach and traditional goroutine patterns with shared channels.
