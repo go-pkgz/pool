@@ -35,16 +35,16 @@ type finalData struct {
 }
 
 // counterPool demonstrates the first stage of processing.
-// each pool type embeds WorkerGroup to handle concurrent processing and collector to gather results.
+// each pool type embeds WorkerGroup to handle concurrent processing and Collector to gather results.
 type counterPool struct {
-	*pool.WorkerGroup[stringData]                            // worker group processes stringData
-	collector                     *pool.Collector[countData] // collector gathers countData
+	*pool.WorkerGroup[stringData] // worker group processes stringData
+	*pool.Collector[countData]    // collector gathers countData
 }
 
 // newCounterPool creates a pool that counts 'a' chars in strings.
 // demonstrates pool construction pattern: collector -> worker -> pool.
 func newCounterPool(ctx context.Context, workers int) *counterPool {
-	collector := pool.NewCollector[countData](ctx, workers)
+	collector := pool.NewCollector[countData](ctx, workers) // collector to gather results, buffer size == workers
 	p := pool.New[stringData](workers, pool.WorkerFunc[stringData](func(_ context.Context, n stringData) error {
 		time.Sleep(time.Duration(rand.Intn(500)) * time.Millisecond) // simulate heavy work
 		count := strings.Count(inputStrings[n.idx], "a")             // use global var for logging only
@@ -55,12 +55,12 @@ func newCounterPool(ctx context.Context, workers int) *counterPool {
 		fmt.Printf("counted 'a' in %q -> %d, duration: %v\n", inputStrings[n.idx], count, time.Since(n.ts))
 		return nil
 	}))
-	return &counterPool{WorkerGroup: p.WithBatchSize(3), collector: collector}
+	return &counterPool{WorkerGroup: p.WithBatchSize(3), Collector: collector}
 }
 
 type multiplierPool struct {
 	*pool.WorkerGroup[countData]
-	collector *pool.Collector[multipliedData]
+	*pool.Collector[multipliedData]
 }
 
 func newMultiplierPool(ctx context.Context, workers int) *multiplierPool {
@@ -73,12 +73,12 @@ func newMultiplierPool(ctx context.Context, workers int) *multiplierPool {
 		collector.Submit(multipliedData{idx: n.idx, value: multiplied, ts: n.ts})
 		return nil
 	}))
-	return &multiplierPool{WorkerGroup: p.WithBatchSize(3), collector: collector}
+	return &multiplierPool{WorkerGroup: p.WithBatchSize(3), Collector: collector}
 }
 
 type squarePool struct {
 	*pool.WorkerGroup[multipliedData]
-	collector *pool.Collector[finalData]
+	*pool.Collector[finalData]
 }
 
 func newSquarePool(ctx context.Context, workers int) *squarePool {
@@ -91,7 +91,7 @@ func newSquarePool(ctx context.Context, workers int) *squarePool {
 		collector.Submit(finalData{idx: n.idx, result: squared})
 		return nil
 	}))
-	return &squarePool{WorkerGroup: p.WithBatchSize(3), collector: collector}
+	return &squarePool{WorkerGroup: p.WithBatchSize(3), Collector: collector}
 }
 
 // ProcessStrings demonstrates chaining multiple pools together to create a processing pipeline.
@@ -103,7 +103,7 @@ func ProcessStrings(ctx context.Context, strings []string) ([]finalData, error) 
 	squares := newSquarePool(ctx, 4)
 
 	// start all pools' workers
-	// this is non-blocking, workers will start processing as soon as items are submitted
+	// this is non-blocking operation, workers will start processing as soon as items are submitted
 	counter.Go(ctx)
 	multiplier.Go(ctx)
 	squares.Go(ctx)
@@ -113,39 +113,40 @@ func ProcessStrings(ctx context.Context, strings []string) ([]finalData, error) 
 	go func() {
 		for i := range strings {
 			fmt.Printf("submitting: %q\n", strings[i])
-			counter.Submit(stringData{idx: i, ts: time.Now()})
+			counter.WorkerGroup.Submit(stringData{idx: i, ts: time.Now()})
 			time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
 		}
 		// close pool and collector when all inputs are submitted
-		counter.Close(ctx)
-		counter.collector.Close()
+		counter.WorkerGroup.Close(ctx)
+		counter.Collector.Close()
 	}()
 
 	// organize pipes between pools
 	// we use goroutines to communicate between pools in a non-blocking way
 	go func() {
 		// pipe from counter to multiplier using collector's iterator
-		for v := range counter.collector.Iter() { // iter will stop on completion of counter pool
-			multiplier.Submit(v)
+		for v := range counter.Iter() { // iter will stop on completion of counter pool
+			multiplier.WorkerGroup.Submit(v)
 		}
-		multiplier.Close(ctx)
-		multiplier.collector.Close()
+		multiplier.WorkerGroup.Close(ctx)
+		multiplier.Collector.Close()
 	}()
 
 	go func() {
 		// pipe from multiplier to squares
-		for v := range multiplier.collector.Iter() { // iter will stop on completion of multiplier pool
-			squares.Submit(v)
+		for v := range multiplier.Iter() { // iter will stop on completion of multiplier pool
+			squares.WorkerGroup.Submit(v)
 		}
-		squares.Close(ctx)
-		squares.collector.Close()
+		squares.WorkerGroup.Close(ctx)
+		squares.Collector.Close()
 	}()
 
 	// collect final results until all work is done
 	var results []finalData
 	// iter will stop on completion of squares pool which is the last in the chain
 	// this is a blocking operation and will return when all pools are done
-	for v := range squares.collector.Iter() {
+	// we don't need to wait for each pool to finish explicitly, the iter handles it
+	for v := range squares.Iter() {
 		results = append(results, v)
 	}
 
