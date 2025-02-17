@@ -428,8 +428,7 @@ func (p *WorkerGroup[T]) Close(ctx context.Context) error {
 	return p.eg.Wait()
 }
 
-// Wait till workers completed and the result channel closed. This can be used instead of the cursor
-// in case if the result channel can be ignored and the goal is to wait for the completion.
+// Wait till workers completed and the result channel closed.
 func (p *WorkerGroup[T]) Wait(ctx context.Context) error {
 	// if context canceled, return immediately
 	switch {
