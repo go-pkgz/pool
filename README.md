@@ -379,33 +379,70 @@ fmt.Printf("Important tasks: %d\n", metrics.Get("important-tasks"))
 
 ## Flow Control
 
-The package provides two methods for completion:
+The package provides several methods for flow control and completion:
 
 ```go
-// Close tells workers no more data will be submitted
-// Used by the producer (sender) of data
+// Submit adds items to the pool. Not safe for concurrent use.
+// Used by the producer (sender) of data.
+p.Submit(item)
+
+// Send safely adds items to the pool from multiple goroutines.
+// Used when submitting from worker to another pool, or when multiple goroutines send data.
+p.Send(item)
+
+// Close tells workers no more data will be submitted.
+// Used by the producer (sender) of data.
 p.Close(ctx)  
 
-// Wait blocks until all processing is done
-// Used by the consumer (receiver) of results
+// Wait blocks until all processing is done.
+// Used by the consumer (receiver) of results.
 p.Wait(ctx)   
 ```
 
-Typical producer/consumer pattern:
+Common usage patterns:
+
 ```go
-// Producer goroutine
+// 1. Single producer submitting items
 go func() {
     defer p.Close(ctx) // signal no more data
     for _, task := range tasks {
-        p.Submit(task)
+        p.Submit(task) // Submit is safe here - single goroutine
     }
 }()
 
-// Consumer waits for completion
+// 2. Workers submitting to next stage
+p1 := pool.New[int](5, pool.WorkerFunc[int](func(ctx context.Context, v int) error {
+    result := process(v)
+    p2.Send(result) // Send is safe for concurrent calls from workers
+    return nil
+}))
+
+// 3. Consumer waiting for completion
 if err := p.Wait(ctx); err != nil {
     // handle error
 }
 ```
+
+Pool completion callback allows executing code when all workers are done:
+```go
+p := pool.New[string](5, worker).
+    WithPoolCompleteFn(func(ctx context.Context) error {
+        // called once after all workers complete
+        log.Println("all workers finished")
+        return nil
+    })
+```
+
+The completion callback executes when:
+- All workers have completed processing
+- Errors occurred but pool continued (`WithContinueOnError()`)
+- Does not execute on context cancellation
+
+Important notes:
+- Use `Submit` when sending items from a single goroutine
+- Use `Send` when workers need to submit items to another pool
+- Pool completion callback helps coordinate multi-stage processing
+- Errors in completion callback are included in pool's error result
 
 ## Optional parameters
 
@@ -425,7 +462,8 @@ Available options:
 - `WithWorkerChanSize(size int)` - sets buffer size for worker channels (default: 1)
 - `WithChunkFn(fn func(T) string)` - controls work distribution by key (default: none, random distribution)
 - `WithContinueOnError()` - continues processing on errors (default: false)
-- `WithCompleteFn(fn func(ctx, id, worker))` - called on worker completion (default: none)
+- `WithWorkerCompleteFn(fn func(ctx, id, worker))` - called on worker completion (default: none)
+- `WithPoolCompleteFn(fn func(ctx))` - called on pool completion, i.e., when all workers have completed (default: none)
 
 ### Alternative pool implementations
 

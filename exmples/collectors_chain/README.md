@@ -1,4 +1,4 @@
-# Pool Chain Processing - Example
+# Pool Chain Processing (with collectors) - Example
 
 This example demonstrates how to chain multiple worker pools using [go-pkgz/pool](https://github.com/go-pkgz/pool) package to create a concurrent processing pipeline. It shows how to transform data through multiple processing stages while maintaining type safety and proper coordination between pools.
 

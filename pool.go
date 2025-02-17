@@ -2,9 +2,12 @@ package pool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"math/rand"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -15,18 +18,20 @@ import (
 // WorkerGroup represents a pool of workers processing items in parallel.
 // Supports both direct item processing and batching modes.
 type WorkerGroup[T any] struct {
-	poolSize        int            // number of workers (goroutines)
-	workerChanSize  int            // size of worker channels
-	completeFn      CompleteFn[T]  // completion callback function, called by each worker on completion
-	continueOnError bool           // don't terminate on first error
-	chunkFn         func(T) string // worker selector function
-	worker          Worker[T]      // worker function
-	workerMaker     WorkerMaker[T] // worker maker function
+	poolSize         int                 // number of workers (goroutines)
+	workerChanSize   int                 // size of worker channels
+	workerCompleteFn WorkerCompleteFn[T] // completion callback function, called by each worker on completion
+	poolCompleteFn   GroupCompleteFn[T]  // pool-level completion callback, called once when all workers are done
+	continueOnError  bool                // don't terminate on first error
+	chunkFn          func(T) string      // worker selector function
+	worker           Worker[T]           // worker function
+	workerMaker      WorkerMaker[T]      // worker maker function
 
 	metrics *metrics.Value // shared metrics
 
-	workersCh []chan T // workers input channels
-	sharedCh  chan T   // shared input channel for all workers
+	workersCh     []chan T     // workers input channels
+	sharedCh      chan T       // shared input channel for all workers
+	activeWorkers atomic.Int32 // track number of active workers
 
 	// batching support
 	batchSize     int        // if > 0, accumulate items up to this size
@@ -37,6 +42,8 @@ type WorkerGroup[T any] struct {
 	eg        *errgroup.Group
 	activated bool
 	ctx       context.Context
+
+	sendMu sync.Mutex
 }
 
 // Worker is the interface that wraps the Submit method.
@@ -53,8 +60,11 @@ func (f WorkerFunc[T]) Do(ctx context.Context, v T) error { return f(ctx, v) }
 // WorkerMaker is a function that returns a new Worker
 type WorkerMaker[T any] func() Worker[T]
 
-// CompleteFn called (optionally) on worker completion
-type CompleteFn[T any] func(ctx context.Context, id int, worker Worker[T]) error
+// WorkerCompleteFn called on worker completion
+type WorkerCompleteFn[T any] func(ctx context.Context, id int, worker Worker[T]) error
+
+// GroupCompleteFn called once when all workers are done
+type GroupCompleteFn[T any] func(ctx context.Context) error
 
 // Send func called by worker code to publish results
 type Send[T any] func(val T) error
@@ -131,11 +141,17 @@ func (p *WorkerGroup[T]) WithWorkerChanSize(size int) *WorkerGroup[T] {
 	return p
 }
 
-// WithCompleteFn sets callback executed on worker completion.
+// WithWorkerCompleteFn sets callback executed on worker completion.
 // Useful for cleanup or finalization of worker resources.
 // Default: none (disabled)
-func (p *WorkerGroup[T]) WithCompleteFn(fn CompleteFn[T]) *WorkerGroup[T] {
-	p.completeFn = fn
+func (p *WorkerGroup[T]) WithWorkerCompleteFn(fn WorkerCompleteFn[T]) *WorkerGroup[T] {
+	p.workerCompleteFn = fn
+	return p
+}
+
+// WithPoolCompleteFn sets callback executed once when all workers are done
+func (p *WorkerGroup[T]) WithPoolCompleteFn(fn GroupCompleteFn[T]) *WorkerGroup[T] {
+	p.poolCompleteFn = fn
 	return p
 }
 
@@ -234,6 +250,14 @@ func (p *WorkerGroup[T]) Submit(v T) {
 	}
 }
 
+// Send adds an item to the pool for processing.
+// Safe for concurrent use, intended for worker-to-pool submissions.
+func (p *WorkerGroup[T]) Send(v T) {
+	p.sendMu.Lock()
+	defer p.sendMu.Unlock()
+	p.Submit(v)
+}
+
 // Go activates the pool and starts worker goroutines.
 // Must be called before submitting items.
 func (p *WorkerGroup[T]) Go(ctx context.Context) error {
@@ -249,6 +273,9 @@ func (p *WorkerGroup[T]) Go(ctx context.Context) error {
 	// create metrics context for all workers
 	metricsCtx := metrics.Make(egCtx, p.poolSize)
 	p.metrics = metrics.Get(metricsCtx)
+
+	// set initial count
+	p.activeWorkers.Store(int32(p.poolSize)) //nolint:gosec // no risk of overflow
 
 	// start all goroutines (workers)
 	for i := range p.poolSize {
@@ -347,7 +374,7 @@ func (p *WorkerGroup[T]) workerProc(wCtx context.Context, r workerRequest[T]) fu
 
 			select {
 			case <-wCtx.Done():
-				return wCtx.Err()
+				return p.finishWorker(wCtx, r.id, worker, wCtx.Err(), totalErrs)
 
 			case v, ok := <-r.inCh:
 				if !ok {
@@ -355,10 +382,7 @@ func (p *WorkerGroup[T]) workerProc(wCtx context.Context, r workerRequest[T]) fu
 					continue
 				}
 				if err := processItem(v); err != nil {
-					if ctxErr := wCtx.Err(); ctxErr != nil {
-						return ctxErr
-					}
-					return err
+					return p.finishWorker(wCtx, r.id, worker, err, totalErrs)
 				}
 
 			case batch, ok := <-r.batchCh:
@@ -367,10 +391,7 @@ func (p *WorkerGroup[T]) workerProc(wCtx context.Context, r workerRequest[T]) fu
 					continue
 				}
 				if err := processBatch(batch); err != nil {
-					if ctxErr := wCtx.Err(); ctxErr != nil {
-						return ctxErr
-					}
-					return err
+					return p.finishWorker(wCtx, r.id, worker, err, totalErrs)
 				}
 			}
 		}
@@ -379,12 +400,27 @@ func (p *WorkerGroup[T]) workerProc(wCtx context.Context, r workerRequest[T]) fu
 
 // finishWorker handles worker completion logic
 func (p *WorkerGroup[T]) finishWorker(ctx context.Context, id int, worker Worker[T], lastErr error, totalErrs int) error {
-	if p.completeFn != nil && (lastErr == nil || p.continueOnError) {
+	// worker completion should be called only if we are continuing on error or no error
+	if p.workerCompleteFn != nil && (lastErr == nil || p.continueOnError) {
 		wrapFinTmr := p.metrics.StartTimer(id, metrics.TimerWrap)
-		if e := p.completeFn(ctx, id, worker); e != nil {
-			lastErr = fmt.Errorf("complete func for %d failed: %w", id, e)
+		if e := p.workerCompleteFn(ctx, id, worker); e != nil {
+			if lastErr == nil {
+				lastErr = fmt.Errorf("complete worker func for %d failed: %w", id, e)
+			}
 		}
 		wrapFinTmr()
+	}
+
+	activeWorkers := p.activeWorkers.Add(-1)
+
+	// pool completion should be called when this is the last worker
+	// regardless of error state, except for context cancellation
+	if activeWorkers == 0 && p.poolCompleteFn != nil && !errors.Is(lastErr, context.Canceled) {
+		if e := p.poolCompleteFn(ctx); e != nil {
+			if lastErr == nil {
+				lastErr = fmt.Errorf("complete pool func for %d failed: %w", id, e)
+			}
+		}
 	}
 
 	if lastErr != nil {
