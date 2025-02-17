@@ -186,8 +186,8 @@ func (p *WorkerGroup[T]) WithBatchSize(size int) *WorkerGroup[T] {
 	return p
 }
 
-// Submit adds an item to the pool for processing.
-// May block if worker channels are full.
+// Submit adds an item to the pool for processing. May block if worker channels are full.
+// Not thread-safe, intended for use by the main thread ot a single producer's thread.
 func (p *WorkerGroup[T]) Submit(v T) {
 	// check context early
 	select {
@@ -251,7 +251,7 @@ func (p *WorkerGroup[T]) Submit(v T) {
 }
 
 // Send adds an item to the pool for processing.
-// Safe for concurrent use, intended for worker-to-pool submissions.
+// Safe for concurrent use, intended for worker-to-pool submissions or for use by multiple concurrent producers.
 func (p *WorkerGroup[T]) Send(v T) {
 	p.sendMu.Lock()
 	defer p.sendMu.Unlock()
