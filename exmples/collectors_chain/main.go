@@ -46,8 +46,8 @@ type counterPool struct {
 func newCounterPool(ctx context.Context, workers int) *counterPool {
 	collector := pool.NewCollector[countData](ctx, workers) // collector to gather results, buffer size == workers
 	p := pool.New[stringData](workers, pool.WorkerFunc[stringData](func(_ context.Context, n stringData) error {
-		time.Sleep(time.Duration(rand.Intn(500)) * time.Millisecond) // simulate heavy work
-		count := strings.Count(inputStrings[n.idx], "a")             // use global var for logging only
+		time.Sleep(time.Duration(rand.Intn(5)) * time.Millisecond) // simulate heavy work
+		count := strings.Count(inputStrings[n.idx], "a")           // use global var for logging only
 		if count > 2 {
 			// demonstrates filtering: only strings with >2 'a's passed to the next stage
 			collector.Submit(countData{idx: n.idx, count: count, ts: n.ts})
@@ -66,7 +66,7 @@ type multiplierPool struct {
 func newMultiplierPool(ctx context.Context, workers int) *multiplierPool {
 	collector := pool.NewCollector[multipliedData](ctx, workers)
 	p := pool.New[countData](workers, pool.WorkerFunc[countData](func(_ context.Context, n countData) error {
-		time.Sleep(time.Duration(rand.Intn(1000)) * time.Millisecond)
+		time.Sleep(time.Duration(rand.Intn(5)) * time.Millisecond)
 		multiplied := n.count * 10 // transform data: multiply by 10
 		fmt.Printf("multiplied: %d -> %d (src: %q, processing time: %v)\n",
 			n.count, multiplied, inputStrings[n.idx], time.Since(n.ts))
@@ -87,7 +87,7 @@ func newSquarePool(ctx context.Context, workers int) *squarePool {
 		squared := n.value * n.value
 		fmt.Printf("squared: %d -> %d (src: %q, processing time: %v)\n",
 			n.value, squared, inputStrings[n.idx], time.Since(n.ts))
-		time.Sleep(time.Duration(rand.Intn(1000)) * time.Millisecond)
+		time.Sleep(time.Duration(rand.Intn(5)) * time.Millisecond)
 		collector.Submit(finalData{idx: n.idx, result: squared})
 		return nil
 	}))
@@ -114,7 +114,7 @@ func ProcessStrings(ctx context.Context, strings []string) ([]finalData, error) 
 		for i := range strings {
 			fmt.Printf("submitting: %q\n", strings[i])
 			counter.WorkerGroup.Submit(stringData{idx: i, ts: time.Now()})
-			time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+			time.Sleep(time.Duration(rand.Intn(3)) * time.Millisecond)
 		}
 		// close pool and collector when all inputs are submitted
 		counter.WorkerGroup.Close(ctx)
@@ -172,6 +172,9 @@ func main() {
 		"abracadabra",
 		"bandanna",
 		"barbarian",
+		"antarctica",
+		"arctic",
+		"baccarat",
 	}
 
 	res, err := ProcessStrings(context.Background(), inputStrings)
@@ -182,4 +185,5 @@ func main() {
 	for _, v := range res {
 		fmt.Printf("src: %q, squared a-count: %d\n", inputStrings[v.idx], v.result)
 	}
+	fmt.Printf("\nTotal: %d", len(res))
 }

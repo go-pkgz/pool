@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/rand"
 	"sort"
 	"strings"
 	"sync"
@@ -475,13 +476,13 @@ func TestPool_WorkerCompletion(t *testing.T) {
 		assert.Equal(t, []string{"ok1", "ok2"}, processed)
 	})
 
-	t.Run("completeFn error", func(t *testing.T) {
+	t.Run("workerCompleteFn error", func(t *testing.T) {
 		worker := WorkerFunc[string](func(_ context.Context, v string) error {
 			return nil
 		})
 
 		completeFnError := fmt.Errorf("complete error")
-		p := New[string](1, worker).WithCompleteFn(func(context.Context, int, Worker[string]) error {
+		p := New[string](1, worker).WithWorkerCompleteFn(func(context.Context, int, Worker[string]) error {
 			return completeFnError
 		})
 		require.NoError(t, p.Go(context.Background()))
@@ -492,13 +493,13 @@ func TestPool_WorkerCompletion(t *testing.T) {
 		require.ErrorIs(t, err, completeFnError)
 	})
 
-	t.Run("batch error prevents completeFn", func(t *testing.T) {
+	t.Run("batch error prevents workerCompleteFn", func(t *testing.T) {
 		var completeFnCalled bool
 		worker := WorkerFunc[string](func(_ context.Context, v string) error {
 			return fmt.Errorf("batch error")
 		})
 
-		p := New[string](1, worker).WithCompleteFn(func(context.Context, int, Worker[string]) error {
+		p := New[string](1, worker).WithWorkerCompleteFn(func(context.Context, int, Worker[string]) error {
 			completeFnCalled = true
 			return nil
 		})
@@ -508,7 +509,7 @@ func TestPool_WorkerCompletion(t *testing.T) {
 		err := p.Close(context.Background())
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "batch error")
-		assert.False(t, completeFnCalled, "completeFn should not be called after batch error")
+		assert.False(t, completeFnCalled, "workerCompleteFn should not be called after batch error")
 	})
 
 	t.Run("context cancellation", func(t *testing.T) {
@@ -1254,4 +1255,296 @@ func TestPool_DirectModeChunking(t *testing.T) {
 	}
 
 	assert.NotEqual(t, firstWorkerPrefix, secondWorkerPrefix, "workers should handle different prefixes")
+}
+
+func TestPool_PoolCompletion(t *testing.T) {
+	t.Run("called once after all workers done", func(t *testing.T) {
+		var workersCompleted, poolCompleteCalls atomic.Int32
+
+		worker := WorkerFunc[string](func(_ context.Context, v string) error {
+			time.Sleep(time.Millisecond) // ensure work takes some time
+			workersCompleted.Add(1)
+			return nil
+		})
+
+		p := New[string](3, worker).
+			WithWorkerCompleteFn(func(context.Context, int, Worker[string]) error {
+				return nil // worker completion should still work
+			}).
+			WithPoolCompleteFn(func(context.Context) error {
+				poolCompleteCalls.Add(1)
+				return nil
+			})
+
+		require.NoError(t, p.Go(context.Background()))
+
+		// submit enough work for all workers
+		for i := 0; i < 3; i++ {
+			p.Submit(fmt.Sprintf("test%d", i))
+		}
+		require.NoError(t, p.Close(context.Background()))
+
+		assert.Equal(t, int32(3), workersCompleted.Load(),
+			"all workers should process items")
+		assert.Equal(t, int32(1), poolCompleteCalls.Load(),
+			"pool completion callback should be called exactly once")
+	})
+
+	t.Run("pool completion error handling", func(t *testing.T) {
+		errTest := errors.New("test error")
+		worker := WorkerFunc[string](func(_ context.Context, _ string) error {
+			return nil
+		})
+
+		p := New[string](1, worker).
+			WithPoolCompleteFn(func(context.Context) error {
+				return errTest
+			})
+
+		require.NoError(t, p.Go(context.Background()))
+		p.Submit("test")
+		err := p.Close(context.Background())
+		require.Error(t, err)
+		require.ErrorIs(t, err, errTest)
+	})
+
+	t.Run("pool completion with worker errors", func(t *testing.T) {
+		var completeCalled atomic.Bool
+		errWorker := errors.New("worker error")
+
+		worker := WorkerFunc[string](func(_ context.Context, _ string) error {
+			return errWorker
+		})
+
+		p := New[string](1, worker).
+			WithPoolCompleteFn(func(context.Context) error {
+				completeCalled.Store(true)
+				return nil
+			})
+
+		require.NoError(t, p.Go(context.Background()))
+		p.Submit("test")
+		err := p.Close(context.Background())
+		require.Error(t, err)
+		require.ErrorIs(t, err, errWorker)
+		assert.True(t, completeCalled.Load(),
+			"pool completion should be called even with worker errors")
+	})
+
+	t.Run("chained pools completion order", func(t *testing.T) {
+		var order []string
+		var mu sync.Mutex
+		addToOrder := func(s string) {
+			mu.Lock()
+			order = append(order, s)
+			mu.Unlock()
+		}
+
+		// create two pools where first pool completion triggers second pool close
+		var p2 *WorkerGroup[string]
+		p1 := New[string](2, WorkerFunc[string](func(_ context.Context, _ string) error {
+			addToOrder("p1 worker")
+			p2.Submit("from p1")
+			return nil
+		})).WithPoolCompleteFn(func(ctx context.Context) error {
+			addToOrder("p1 complete")
+			return p2.Close(ctx)
+		})
+
+		p2 = New[string](2, WorkerFunc[string](func(_ context.Context, _ string) error {
+			addToOrder("p2 worker")
+			return nil
+		})).WithPoolCompleteFn(func(context.Context) error {
+			addToOrder("p2 complete")
+			return nil
+		})
+
+		require.NoError(t, p1.Go(context.Background()))
+		require.NoError(t, p2.Go(context.Background()))
+
+		p1.Submit("test")
+		require.NoError(t, p1.Close(context.Background()))
+
+		mu.Lock()
+		require.Contains(t, order, "p1 complete")
+		require.Contains(t, order, "p2 complete")
+
+		// find indices manually
+		p1CompleteIdx := -1
+		p2CompleteIdx := -1
+		for i, s := range order {
+			if s == "p1 complete" {
+				p1CompleteIdx = i
+			}
+			if s == "p2 complete" {
+				p2CompleteIdx = i
+			}
+		}
+
+		assert.Greater(t, p2CompleteIdx, p1CompleteIdx,
+			"p1 should complete before p2")
+		mu.Unlock()
+	})
+
+	t.Run("context cancellation", func(t *testing.T) {
+		var completeCalled atomic.Bool
+		worker := WorkerFunc[string](func(ctx context.Context, _ string) error {
+			// simulate long running work
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+				return nil
+			}
+		})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		p := New[string](1, worker).
+			WithPoolCompleteFn(func(context.Context) error {
+				completeCalled.Store(true)
+				return nil
+			})
+
+		require.NoError(t, p.Go(ctx))
+		p.Submit("test")
+		cancel() // cancel before work completes
+
+		err := p.Close(context.Background())
+		require.Error(t, err)
+		require.ErrorIs(t, err, context.Canceled)
+		assert.False(t, completeCalled.Load(),
+			"pool completion should not be called on context cancellation")
+	})
+}
+
+func TestPool_ChainedBatching(t *testing.T) {
+	var p1, p2, p3 *WorkerGroup[int]
+	var stage1, stage2, stage3 atomic.Int32
+
+	// first stage multiplies by 2
+	p1 = New[int](2, WorkerFunc[int](func(_ context.Context, v int) error {
+		stage1.Add(1)
+		p2.Send(v * 2)
+		return nil
+	})).WithBatchSize(3).WithPoolCompleteFn(func(ctx context.Context) error {
+		return p2.Close(ctx)
+	})
+
+	// second stage multiplies by 3
+	p2 = New[int](2, WorkerFunc[int](func(_ context.Context, v int) error {
+		stage2.Add(1)
+		p3.Send(v * 3)
+		return nil
+	})).WithBatchSize(3).WithPoolCompleteFn(func(ctx context.Context) error {
+		return p3.Close(ctx)
+	})
+
+	// final stage just counts
+	var results []int
+	var mu sync.Mutex
+
+	p3 = New[int](2, WorkerFunc[int](func(_ context.Context, v int) error {
+		stage3.Add(1)
+		mu.Lock()
+		results = append(results, v)
+		mu.Unlock()
+		return nil
+	})).WithBatchSize(3)
+
+	require.NoError(t, p1.Go(context.Background()))
+	require.NoError(t, p2.Go(context.Background()))
+	require.NoError(t, p3.Go(context.Background()))
+
+	// submit items
+	inputCount := 100
+	for i := 0; i < inputCount; i++ {
+		p1.Submit(i)
+	}
+	require.NoError(t, p1.Close(context.Background()))
+
+	// verify counts match
+	assert.Equal(t, int32(inputCount), stage1.Load(), "stage1 should process all inputs")
+	assert.Equal(t, int32(inputCount), stage2.Load(), "stage2 should process all items from stage1")
+	assert.Equal(t, int32(inputCount), stage3.Load(), "stage3 should process all items from stage2")
+
+	mu.Lock()
+	assert.Len(t, results, inputCount, "should have same number of results as inputs")
+	mu.Unlock()
+}
+
+func TestPool_HeavyBatching(t *testing.T) {
+	var processed atomic.Int32
+	var batches atomic.Int32
+
+	worker := WorkerFunc[int](func(_ context.Context, v int) error {
+		processed.Add(1)
+		batches.Add(1)
+		time.Sleep(time.Duration(rand.Intn(10)) * time.Millisecond) // simulate work
+		return nil
+	})
+
+	p := New[int](3, worker).WithBatchSize(10)
+	require.NoError(t, p.Go(context.Background()))
+
+	// submit items that should form complete and partial batches
+	const items = 1000
+	for i := 0; i < items; i++ {
+		p.Submit(i)
+	}
+	require.NoError(t, p.Close(context.Background()))
+
+	assert.Equal(t, int32(items), processed.Load(), "should process exactly as many items as submitted")
+
+	// log batch stats
+	t.Logf("Submitted: %d, Processed: %d, Batches: %d",
+		items, processed.Load(), batches.Load())
+	t.Logf("Average batch size: %.2f", float64(processed.Load())/float64(batches.Load()))
+}
+
+func TestPool_BatchedSend(t *testing.T) {
+	var p1, p2 *WorkerGroup[int]
+	var stage1, stage2 atomic.Int32
+	var processed sync.Map
+
+	// first pool submits to second
+	p1 = New[int](2, WorkerFunc[int](func(_ context.Context, v int) error {
+		stage1.Add(1)
+		time.Sleep(time.Duration(rand.Intn(100)) * time.Microsecond)
+		p2.Send(v)
+		return nil
+	})).WithBatchSize(10).WithPoolCompleteFn(func(ctx context.Context) error {
+		return p2.Close(ctx)
+	})
+
+	// second pool just counts
+	p2 = New[int](2, WorkerFunc[int](func(_ context.Context, v int) error {
+		stage2.Add(1)
+		time.Sleep(time.Duration(rand.Intn(100)) * time.Microsecond)
+		if _, loaded := processed.LoadOrStore(v, true); loaded {
+			t.Errorf("value %d processed more than once", v)
+		}
+		return nil
+	})).WithBatchSize(10)
+
+	require.NoError(t, p1.Go(context.Background()))
+	require.NoError(t, p2.Go(context.Background()))
+
+	const items = 1000
+	for i := 0; i < items; i++ {
+		p1.Submit(i)
+	}
+	require.NoError(t, p1.Close(context.Background()))
+
+	// count unique processed items
+	var uniqueProcessed int
+	processed.Range(func(_, _ interface{}) bool {
+		uniqueProcessed++
+		return true
+	})
+
+	t.Logf("Stage1: %d, Stage2: %d, Unique: %d",
+		stage1.Load(), stage2.Load(), uniqueProcessed)
+	assert.Equal(t, items, uniqueProcessed, "should process each item exactly once")
+	assert.Equal(t, int32(items), stage1.Load(), "stage1 count should match input")
+	assert.Equal(t, int32(items), stage2.Load(), "stage2 count should match input")
 }

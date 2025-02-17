@@ -83,7 +83,7 @@ func main() {
 		}
 	}).WithBatchSize(*batchSize).
 		WithContinueOnError().
-		WithCompleteFn(func(ctx context.Context, id int, w pool.Worker[string]) error {
+		WithWorkerCompleteFn(func(ctx context.Context, id int, w pool.Worker[string]) error {
 			// type assert to get our concrete worker type
 			tw, ok := w.(*TokenizingWorker)
 			if !ok {

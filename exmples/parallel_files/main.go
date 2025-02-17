@@ -65,7 +65,7 @@ func main() {
 	})
 
 	// set batch size and complete function
-	p = p.WithBatchSize(100).WithCompleteFn(func(_ context.Context, _ int, w pool.Worker[chunk]) error {
+	p = p.WithBatchSize(100).WithWorkerCompleteFn(func(_ context.Context, _ int, w pool.Worker[chunk]) error {
 		collector.Submit(*w.(*fileWorker))
 		return nil
 	})
