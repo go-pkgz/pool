@@ -1,6 +1,6 @@
 module examples/direct_chain
 
-go 1.24.0
+go 1.24
 
 require github.com/go-pkgz/pool v0.5.0
 
