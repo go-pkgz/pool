@@ -643,6 +643,7 @@ pool (with batching and chunking):            11.43ms/op
 - [pond](https://github.com/alitto/pond) - pond is a minimalistic and high-performance Go library designed to elegantly manage concurrent tasks.
 - [goworker](https://github.com/benmanns/goworker) - goworker is a Resque-compatible, Go-based background worker. It allows you to push jobs into a queue using an expressive language like Ruby while harnessing the efficiency and concurrency of Go to minimize job latency and cost.
 - [gowp](https://github.com/xxjwxc/gowp) - golang worker pool
+- [conc](https://github.com/sourcegraph/conc) - better structured concurrency for go
 - for more see [awesome-go goroutines](https://awesome-go.com/goroutines/) list
 
 ## Contributing
