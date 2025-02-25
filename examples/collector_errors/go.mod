@@ -1,4 +1,4 @@
-module examples/collectors_chain
+module examples/collector_errors
 
 go 1.24
 
