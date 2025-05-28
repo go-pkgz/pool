@@ -105,7 +105,7 @@ func ProcessStrings(ctx context.Context, input []string) ([]finalData, error) {
 		results = append(results, v)
 	}
 
-	// Print debug statistics
+	// print debug statistics
 	fmt.Printf("\nProcessing statistics:\n")
 	fmt.Printf("Total items submitted: %d\n", submitted.Load())
 	fmt.Printf("Items passed filter (>2 'a's): %d\n", filtered.Load())

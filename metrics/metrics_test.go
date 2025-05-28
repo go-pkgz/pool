@@ -29,7 +29,7 @@ func TestMetrics_UserDefined(t *testing.T) {
 
 	t.Run("string formatting", func(t *testing.T) {
 		m := New(10)
-		assert.Equal(t, "", m.String(), "empty metrics should return empty string")
+		assert.Empty(t, m.String(), "empty metrics should return empty string")
 
 		m.Inc("test")
 		assert.Equal(t, "[test:1]", m.String())
@@ -454,20 +454,20 @@ func TestMetrics_ParallelProcessing(t *testing.T) {
 
 	stats := m.GetStats()
 
-	// Processing time should be max of workers, not sum
+	// processing time should be max of workers, not sum
 	assert.Equal(t, 150*time.Millisecond, stats.ProcessingTime,
 		"processing time should be max across workers")
 
-	// Total time should be elapsed wall time
+	// total time should be elapsed wall time
 	assert.InDelta(t, 200, stats.TotalTime.Milliseconds(), 50,
 		"total time should be actual elapsed time")
 
-	// Rate should be total processed divided by total time
+	// rate should be total processed divided by total time
 	expectedRate := float64(stats.Processed) / stats.TotalTime.Seconds()
 	assert.InDelta(t, expectedRate, stats.RatePerSec, 1,
 		"rate should be based on total processed items and elapsed time")
 
-	// Average latency should use max processing time
+	// average latency should use max processing time
 	expectedLatency := stats.ProcessingTime / time.Duration(stats.Processed)
 	assert.Equal(t, expectedLatency, stats.AvgLatency,
 		"average latency should be based on max processing time")

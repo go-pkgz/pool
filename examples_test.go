@@ -65,7 +65,7 @@ func Example_withRouting() {
 	)
 	p.Go(context.Background())
 
-	// Submit all numbers
+	// submit all numbers
 	for i := 1; i <= 4; i++ {
 		p.Submit(i)
 	}
@@ -404,7 +404,7 @@ func (w *processingWorker) Do(_ context.Context, v string) error {
 }
 
 func Example_workerTypes() {
-	// These two workers are functionally equivalent:
+	// these two workers are functionally equivalent:
 	// 1. Implementing Worker interface explicitly
 	// 2. Using WorkerFunc adapter - same thing, just shorter
 	workerFn := WorkerFunc[string](func(_ context.Context, v string) error {
@@ -412,13 +412,13 @@ func Example_workerTypes() {
 		return nil
 	})
 
-	// Run first pool to completion
+	// run first pool to completion
 	p1 := New[string](1, &processingWorker{})
 	p1.Go(context.Background())
 	p1.Submit("task1")
 	p1.Close(context.Background())
 
-	// Then run second pool
+	// then run second pool
 	p2 := New[string](1, workerFn)
 	p2.Go(context.Background())
 	p2.Submit("task2")
@@ -430,7 +430,7 @@ func Example_workerTypes() {
 }
 
 func Example_middleware() {
-	// Create a worker that sometimes fails
+	// create a worker that sometimes fails
 	worker := WorkerFunc[string](func(_ context.Context, v string) error {
 		if v == "fail" {
 			return errors.New("simulated failure")
@@ -439,7 +439,7 @@ func Example_middleware() {
 		return nil
 	})
 
-	// Create logging middleware
+	// create logging middleware
 	logging := func(next Worker[string]) Worker[string] {
 		return WorkerFunc[string](func(ctx context.Context, v string) error {
 			fmt.Printf("starting: %s\n", v)
@@ -449,7 +449,7 @@ func Example_middleware() {
 		})
 	}
 
-	// Create retry middleware
+	// create retry middleware
 	retry := func(attempts int) Middleware[string] {
 		return func(next Worker[string]) Worker[string] {
 			return WorkerFunc[string](func(ctx context.Context, v string) error {
@@ -467,11 +467,11 @@ func Example_middleware() {
 		}
 	}
 
-	// Create pool with both middleware - retry first since we want logging to be outermost
+	// create pool with both middleware - retry first since we want logging to be outermost
 	p := New[string](1, worker).Use(retry(2), logging)
 	p.Go(context.Background())
 
-	// Process items
+	// process items
 	p.Submit("ok")   // should succeed first time
 	p.Submit("fail") // should fail after retries
 	p.Close(context.Background())

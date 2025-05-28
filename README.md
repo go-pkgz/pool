@@ -225,6 +225,7 @@ The package supports middleware pattern similar to HTTP middleware in Go. Middle
 - Retries with backoff
 - Timeouts
 - Panic recovery
+- Rate limiting
 - Metrics and logging
 - Error handling
 
@@ -242,7 +243,10 @@ p.Use(middleware.Recovery[string](func(p interface{}) {
 }))
 
 // Add validation before processing
-p.Use(middleware.Validate([string]validator))
+p.Use(middleware.Validator[string](validator))
+
+// Add rate limiting
+p.Use(middleware.RateLimiter[string](10, 5))  // 10 requests/sec with burst of 5
 ```
 
 Custom middleware:

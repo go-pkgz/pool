@@ -189,19 +189,19 @@ func (m *Value) IncDropped(wid int) {
 func (m *Value) GetStats() Stats {
 	var result Stats
 
-	// Sum up stats from all workers
+	// sum up stats from all workers
 	for i := range m.workerStats {
 		result.Processed += m.workerStats[i].Processed
 		result.Errors += m.workerStats[i].Errors
 		result.Dropped += m.workerStats[i].Dropped
 
-		// Sum wait time - represents total idle time across all workers
+		// sum wait time - represents total idle time across all workers
 		result.WaitTime += m.workerStats[i].WaitTime
 
-		// For processing time we take max since workers run in parallel
+		// for processing time we take max since workers run in parallel
 		result.ProcessingTime = max(result.ProcessingTime, m.workerStats[i].ProcessingTime)
 
-		// Sum initialization and wrap times as they are sequential
+		// sum initialization and wrap times as they are sequential
 		result.InitTime += m.workerStats[i].InitTime
 		result.WrapTime += m.workerStats[i].WrapTime
 	}
@@ -213,7 +213,7 @@ func (m *Value) GetStats() Stats {
 		result.RatePerSec = float64(result.Processed) / result.TotalTime.Seconds()
 	}
 	if result.Processed > 0 {
-		// For average latency we use max processing time divided by total processed
+		// for average latency we use max processing time divided by total processed
 		result.AvgLatency = result.ProcessingTime / time.Duration(result.Processed)
 	}
 	totalAttempted := result.Processed + result.Errors + result.Dropped

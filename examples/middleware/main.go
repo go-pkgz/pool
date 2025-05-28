@@ -79,6 +79,13 @@ func runPool(ctx context.Context, p *pool.WorkerGroup[Task], cfg config) error {
 		p.Submit(task)
 	}
 
+	// demonstrate rate limiting
+	cfg.logger.Info("submitting rate-limited tasks")
+	start := time.Now()
+	for i := 0; i < 10; i++ {
+		p.Submit(Task{ID: fmt.Sprintf("rate-%d", i), Priority: 3, Payload: "rate limited task"})
+	}
+
 	// close pool and wait for completion
 	if err := p.Close(ctx); err != nil {
 		return err
@@ -87,7 +94,7 @@ func runPool(ctx context.Context, p *pool.WorkerGroup[Task], cfg config) error {
 	// print final metrics
 	metrics := p.Metrics().GetStats()
 	cfg.logger.Info("pool finished", "processed", metrics.Processed, "errors", metrics.Errors,
-		"total_time", metrics.TotalTime.String())
+		"total_time", metrics.TotalTime.String(), "duration", time.Since(start).String())
 
 	return nil
 }
@@ -99,7 +106,8 @@ func makePool(cfg config) *pool.WorkerGroup[Task] {
 		middleware.Recovery[Task](func(p interface{}) { // recover from panics
 			cfg.logger.Error("panic recovered", "error", fmt.Sprint(p))
 		}),
-		makeStructuredLogger(cfg.logger), // custom structured logging
+		middleware.RateLimiter[Task](5, 3), // rate limit: 5 tasks/second with burst of 3
+		makeStructuredLogger(cfg.logger),   // custom structured logging
 	)
 }
 

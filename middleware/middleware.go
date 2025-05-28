@@ -7,6 +7,8 @@ import (
 	"math/rand"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/go-pkgz/pool"
 )
 
@@ -80,7 +82,7 @@ func Recovery[T any](handler func(interface{})) pool.Middleware[T] {
 						handler(r)
 					}
 
-					// Convert panic to error
+					// convert panic to error
 					switch rt := r.(type) {
 					case error:
 						err = fmt.Errorf("panic recovered: %w", rt)
@@ -101,6 +103,40 @@ func Validator[T any](validator func(T) error) pool.Middleware[T] {
 		return pool.WorkerFunc[T](func(ctx context.Context, v T) error {
 			if err := validator(v); err != nil {
 				return fmt.Errorf("validation failed: %w", err)
+			}
+			return next.Do(ctx, v)
+		})
+	}
+}
+
+// RateLimiter returns a middleware that limits the rate of task processing.
+// It uses a token bucket algorithm with the specified rate (tasks/second) and burst size.
+// When the rate limit is exceeded, it blocks until a token is available.
+// The middleware respects context cancellation - if the context is cancelled while waiting,
+// it returns the context error.
+// Note: The rate limit is enforced globally across all workers in the pool, not per worker.
+//
+// Example:
+//
+//	// Allow 10 tasks per second with a burst of 20
+//	pool.Use(middleware.RateLimiter[Task](10, 20))
+func RateLimiter[T any](rateLimit float64, burst int) pool.Middleware[T] {
+	// validate inputs
+	if rateLimit <= 0 {
+		rateLimit = 1 // default to 1 task per second
+	}
+	if burst <= 0 {
+		burst = 1 // minimum burst of 1
+	}
+
+	// create the rate limiter
+	limiter := rate.NewLimiter(rate.Limit(rateLimit), burst)
+
+	return func(next pool.Worker[T]) pool.Worker[T] {
+		return pool.WorkerFunc[T](func(ctx context.Context, v T) error {
+			// wait for permission to proceed
+			if err := limiter.Wait(ctx); err != nil {
+				return fmt.Errorf("rate limiter wait failed: %w", err)
 			}
 			return next.Do(ctx, v)
 		})

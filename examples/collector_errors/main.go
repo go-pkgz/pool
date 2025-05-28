@@ -99,7 +99,7 @@ func main() {
 	fmt.Printf("Processing time:   %v\n", stats.ProcessingTime.Round(time.Millisecond))
 	fmt.Printf("Total time:        %v\n", stats.TotalTime.Round(time.Millisecond))
 
-	// Calculate average duration for successes and failures
+	// calculate average duration for successes and failures
 	var totalSuccessDuration, totalFailureDuration time.Duration
 	for _, s := range successes {
 		totalSuccessDuration += s.Duration
@@ -136,7 +136,7 @@ func main() {
 			results := errorsByType[errType]
 			fmt.Printf("\n• %s (%d occurrences):\n", errType, len(results))
 
-			// Sort results by timestamp
+			// sort results by timestamp
 			sort.Slice(results, func(i, j int) bool {
 				return results[i].Timestamp.Before(results[j].Timestamp)
 			})
