@@ -13,6 +13,7 @@ This example demonstrates how to use middleware in [go-pkgz/pool](https://github
     - Input validation before processing
     - Automatic retries for failed tasks
     - Panic recovery for robustness
+    - Rate limiting for flow control
     - Structured logging for observability
 
 3. Real-world patterns:
@@ -26,6 +27,7 @@ This example demonstrates how to use middleware in [go-pkgz/pool](https://github
 - Task validation before processing
 - Automatic retries with exponential backoff
 - Panic recovery with custom handler
+- Rate limiting with token bucket algorithm
 - Structured JSON logging
 - Performance metrics collection
 - Configurable worker count and retry attempts
@@ -72,10 +74,11 @@ The implementation demonstrates several key concepts:
 2. Middleware composition:
    ```go
    pool.New[Task](workers, makeWorker()).Use(
-       middleware.Validate(validator),    // validate first
-       middleware.Retry[Task](retries),  // then retry on failure
+       middleware.Validator(validator),     // validate first
+       middleware.Retry[Task](retries),    // then retry on failure
        middleware.Recovery[Task](handler), // recover from panics
-       customLogger,               // log everything
+       middleware.RateLimiter[Task](5, 3), // rate limit to 5/sec
+       customLogger,                       // log everything
    )
    ```
 
@@ -114,6 +117,20 @@ The implementation demonstrates several key concepts:
     "duration_ms": 100,
     "error": "failed to process task 2"
 }
+{
+    "time": "2025-02-12T10:00:00Z",
+    "level": "INFO",
+    "msg": "submitting rate-limited tasks"
+}
+{
+    "time": "2025-02-12T10:00:00Z",
+    "level": "INFO",
+    "msg": "pool finished",
+    "processed": 14,
+    "errors": 2,
+    "total_time": "3.2s",
+    "duration": "2.1s"
+}
 ```
 
 ## Architecture
@@ -137,4 +154,5 @@ Each component is isolated and has a single responsibility, making the code easy
 - The first middleware wraps the outermost layer
 - Built-in middleware handles common patterns
 - Custom middleware can add any functionality
+- Rate limiting is shared across all workers in the pool
 - Structured logging as an example of cross-cutting concern

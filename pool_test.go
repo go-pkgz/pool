@@ -1191,7 +1191,7 @@ func TestPool_Batch(t *testing.T) {
 		for i := 0; i < totalItems/batchSize; i++ {
 			for j := i + 1; j < totalItems/batchSize; j++ {
 				// check if batch i and j overlapped in time
-				if !(batchEndTimes[i].Before(batchStartTimes[j]) || batchEndTimes[j].Before(batchStartTimes[i])) {
+				if !batchEndTimes[i].Before(batchStartTimes[j]) && !batchEndTimes[j].Before(batchStartTimes[i]) {
 					overlapped = true
 					break
 				}
