@@ -9,7 +9,8 @@
 - Support for both stateless shared workers and per-worker instances
 - Batching capability for processing multiple items at once
 - Customizable work distribution through chunk functions
-- Built-in metrics collection (processing times, counts, etc.)
+- Built-in stats collection (processing times, counts, etc.)
+- Ability to submit custom metrics
 - Error handling with continue/stop options
 - Context-based cancellation and timeouts
 - Optional completion callbacks
@@ -23,17 +24,31 @@ Here's a practical example showing how to process a list of URLs in parallel:
 
 ```go
 func main() {
-    // create a worker that fetches URLs
+    // create a worker that fetches URLs and tracks custom metrics
     worker := pool.WorkerFunc[string](func(ctx context.Context, url string) error {
+        // get metrics from context to track custom values
+        m := metrics.Get(ctx)
+        
         resp, err := http.Get(url)
         if err != nil {
+            m.Inc("fetch_errors")
             return fmt.Errorf("failed to fetch %s: %w", url, err)
         }
         defer resp.Body.Close()
         
+        // track response codes
+        m.Inc(fmt.Sprintf("status_%d", resp.StatusCode))
+        
+        // track content length
+        if cl := resp.ContentLength; cl > 0 {
+            m.Add("bytes_fetched", int(cl))
+        }
+        
         if resp.StatusCode != http.StatusOK {
             return fmt.Errorf("bad status code from %s: %d", url, resp.StatusCode)
         }
+        
+        m.Inc("successful_fetches")
         return nil
     })
 	
@@ -65,15 +80,29 @@ func main() {
         log.Printf("some URLs failed: %v", err)
     }
 
-    // get metrics
+    // get metrics object
     metrics := p.Metrics()
+    
+    // display custom metrics
+    fmt.Printf("Custom Metrics:\n")
+    fmt.Printf("  Successful fetches: %d\n", metrics.Get("successful_fetches"))
+    fmt.Printf("  Fetch errors: %d\n", metrics.Get("fetch_errors"))
+    fmt.Printf("  Status 200: %d\n", metrics.Get("status_200"))
+    fmt.Printf("  Total bytes: %d\n", metrics.Get("bytes_fetched"))
+    fmt.Printf("  All metrics: %s\n", metrics.String())
+    
+    // get aggregated statistics
     stats := metrics.GetStats()
-    fmt.Printf("Processed: %d, Errors: %d, Time taken: %v\n",
-        stats.Processed, stats.Errors, stats.TotalTime)
+    fmt.Printf("\nPerformance Statistics:\n")
+    fmt.Printf("  Processed: %d URLs\n", stats.Processed)
+    fmt.Printf("  Errors: %d (%.1f%%)\n", stats.Errors, stats.ErrorRate*100)
+    fmt.Printf("  Rate: %.1f URLs/sec\n", stats.RatePerSec)
+    fmt.Printf("  Avg latency: %v\n", stats.AvgLatency)
+    fmt.Printf("  Total time: %v\n", stats.TotalTime)
 }
 ```
 
-_For more examples, see the [examples](https://github.com/go-pkgz/pool/tree/master/exmples) directory._
+_For more examples, see the [examples](https://github.com/go-pkgz/pool/tree/master/examples) directory._
 
 ## Motivation
 
@@ -110,9 +139,7 @@ Common challenges this package addresses:
 
 ### Worker Types
 
-The pool supports three ways to implement and manage workers:
-
-1. **Core Interface**:
+**Core Interface**:
    ```go
    // Worker is the interface that wraps the Do method
    type Worker[T any] interface {
@@ -124,8 +151,9 @@ The pool supports three ways to implement and manage workers:
    
    func (f WorkerFunc[T]) Do(ctx context.Context, v T) error { return f(ctx, v) }
    ```
+The pool supports two ways to implement and manage workers:
 
-2. **Stateless Shared Workers**:
+1**Stateless Shared Workers**:
    ```go
    // single worker instance shared between all goroutines
    worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
@@ -139,7 +167,7 @@ The pool supports three ways to implement and manage workers:
    - Good for stateless operations
    - More memory efficient
 
-3. **Per-Worker Instances**:
+2**Per-Worker Instances (stateful) **:
    ```go
    type dbWorker struct {
        conn *sql.DB
@@ -379,6 +407,52 @@ fmt.Printf("Total time: %v\n", stats.TotalTime)
 
 // get custom metrics
 fmt.Printf("Important tasks: %d\n", metrics.Get("important-tasks"))
+```
+
+### Stats Structure
+
+The `GetStats()` method returns a comprehensive `Stats` structure with the following fields:
+
+**Counters:**
+- `Processed` - total number of successfully processed items
+- `Errors` - total number of items that returned errors
+- `Dropped` - total number of items dropped (e.g., due to context cancellation)
+
+**Timing Metrics:**
+- `ProcessingTime` - cumulative time spent processing items (max across workers)
+- `WaitTime` - cumulative time workers spent waiting for items
+- `InitTime` - total time spent initializing workers
+- `WrapTime` - total time spent in wrap-up phase
+- `TotalTime` - total elapsed time since pool started
+
+**Derived Statistics:**
+- `RatePerSec` - items processed per second (Processed / TotalTime)
+- `AvgLatency` - average processing time per item (ProcessingTime / Processed)
+- `ErrorRate` - percentage of items that failed (Errors / Total)
+- `DroppedRate` - percentage of items dropped (Dropped / Total)
+- `Utilization` - percentage of time spent processing vs waiting (ProcessingTime / (ProcessingTime + WaitTime))
+
+Example usage:
+```go
+stats := metrics.GetStats()
+
+// check performance
+if stats.RatePerSec < 100 {
+    log.Printf("Warning: processing rate is low: %.1f items/sec", stats.RatePerSec)
+}
+
+// check error rate
+if stats.ErrorRate > 0.05 {
+    log.Printf("High error rate: %.1f%%", stats.ErrorRate * 100)
+}
+
+// check worker utilization
+if stats.Utilization < 0.5 {
+    log.Printf("Workers are underutilized: %.1f%%", stats.Utilization * 100)
+}
+
+// formatted output
+fmt.Printf("Stats: %s\n", stats.String())
 ```
 
 ## Flow Control
