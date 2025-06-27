@@ -153,7 +153,7 @@ Common challenges this package addresses:
    ```
 The pool supports two ways to implement and manage workers:
 
-1**Stateless Shared Workers**:
+1. **Stateless Shared Workers**:
    ```go
    // single worker instance shared between all goroutines
    worker := pool.WorkerFunc[string](func(ctx context.Context, v string) error {
@@ -167,7 +167,7 @@ The pool supports two ways to implement and manage workers:
    - Good for stateless operations
    - More memory efficient
 
-2**Per-Worker Instances (stateful) **:
+2. **Per-Worker Instances (stateful)**:
    ```go
    type dbWorker struct {
        conn *sql.DB
@@ -350,6 +350,8 @@ p := pool.New[string](2, worker).WithContinueOnError()
 
 ### Collecting Results
 
+The pool package includes a powerful Collector for gathering results from workers:
+
 ```go
 // create a collector for results
 collector := pool.NewCollector[Result](ctx, 10)
@@ -363,17 +365,24 @@ worker := pool.WorkerFunc[Input](func(ctx context.Context, v Input) error {
 
 p := pool.New[Input](2, worker)
 
-// get results through iteration
-for v, err := range collector.Iter() {
-    if err != nil {
-        return err
+// process results as they arrive
+go func() {
+    for v, err := range collector.Iter() {
+        if err != nil {
+            log.Printf("collection cancelled: %v", err)
+            return
+        }
+        // use v immediately
     }
-    // use v
-}
+}()
 
-// or collect all at once
-results, err := collector.All()
+// submit work and cleanup
+submitWork(p)
+p.Close(ctx)
+collector.Close()
 ```
+
+See the [Collector section](#collector) for detailed documentation and advanced usage patterns.
 
 ### Metrics and Monitoring
 
@@ -545,100 +554,243 @@ Available options:
 
 ## Collector
 
-The Collector helps manage asynchronous results from pool workers in a synchronous way. It's particularly useful when you need to gather and process results from worker's processing. The Collector uses Go generics and is compatible with any result type.
+The Collector provides a bridge between asynchronous pool workers and synchronous result processing. It's designed to gather results from concurrent workers and present them through a simple, type-safe interface. This is essential when your workers produce values that need to be collected, processed, or aggregated.
 
-### Features
-- Generic implementation supporting any result type
-- Context awareness with graceful cancellation
-- Buffered collection with configurable size
-- Built-in iterator pattern
-- Ability to collect all results at once
+### Key Concepts
 
-### Example Usage
+1. **Asynchronous to Synchronous Bridge**: Workers submit results asynchronously, while consumers read them synchronously
+2. **Type Safety**: Uses Go generics to ensure type safety for any result type
+3. **Buffered Channel**: Internal buffered channel prevents worker blocking
+4. **Context Integration**: Respects context cancellation for graceful shutdown
+
+### Architecture
+
+```
+Workers → Submit() → [Buffered Channel] → Iter()/All() → Consumer
+```
+
+### Basic Usage
 
 ```go
-// create a collector for results with buffer of 10
-collector := pool.NewCollector[string](ctx, 10)
+// create a collector with buffer size matching worker count
+collector := pool.NewCollector[Result](ctx, workerCount)
 
 // worker submits results to collector
-worker := pool.WorkerFunc[int](func(ctx context.Context, v int) error {
-    result := process(v)
-    collector.Submit(result)
+worker := pool.WorkerFunc[Input](func(ctx context.Context, v Input) error {
+    result := processInput(v)
+    collector.Submit(result) // non-blocking if buffer has space
     return nil
 })
 
-// create and run pool
-p := pool.New[int](5, worker)
-require.NoError(t, p.Go(ctx))
+// create and start pool
+p := pool.New[Input](workerCount, worker)
+p.Go(ctx)
 
-// submit items
-for i := 0; i < 100; i++ {
-    p.Submit(i)
-}
-p.Close(ctx)
+// submit work in background
+go func() {
+    defer p.Close(ctx)      // signal no more work
+    defer collector.Close() // signal no more results
+    
+    for _, item := range items {
+        p.Submit(item)
+    }
+}()
 
-// Option 1: process results as they arrive with iterator
+// consume results
 for result, err := range collector.Iter() {
     if err != nil {
-        return err // context cancelled or other error
+        return err // context cancelled
     }
     // process result
 }
+```
 
-// Option 2: get all results at once
-results, err := collector.All()
-if err != nil {
-    return err
+### Advanced Patterns
+
+#### Pattern 1: Error Collection
+Collect both successful results and errors in a unified way:
+
+```go
+type Result struct {
+    Value   string
+    Error   error
+    JobID   int
 }
-// use results slice
+
+collector := pool.NewCollector[Result](ctx, workers)
+
+worker := pool.WorkerFunc[Job](func(ctx context.Context, job Job) error {
+    value, err := processJob(job)
+    collector.Submit(Result{
+        JobID: job.ID,
+        Value: value,
+        Error: err,
+    })
+    return nil // always return nil to continue processing
+})
+
+// process results and errors together
+for result, err := range collector.Iter() {
+    if err != nil {
+        return err // context error
+    }
+    if result.Error != nil {
+        log.Printf("Job %d failed: %v", result.JobID, result.Error)
+    } else {
+        log.Printf("Job %d succeeded: %s", result.JobID, result.Value)
+    }
+}
+```
+
+#### Pattern 2: Pipeline Processing
+Chain multiple pools with collectors for pipeline processing:
+
+```go
+// Stage 1: Parse data
+parseCollector := pool.NewCollector[ParsedData](ctx, 10)
+parsePool := pool.New[RawData](5, parseWorker(parseCollector))
+
+// Stage 2: Transform data  
+transformCollector := pool.NewCollector[TransformedData](ctx, 10)
+transformPool := pool.New[ParsedData](5, transformWorker(transformCollector))
+
+// Connect stages
+go func() {
+    for parsed, err := range parseCollector.Iter() {
+        if err != nil {
+            return
+        }
+        transformPool.Submit(parsed)
+    }
+    transformPool.Close(ctx)
+    transformCollector.Close()
+}()
+```
+
+#### Pattern 3: Selective Collection
+Filter results at the worker level:
+
+```go
+collector := pool.NewCollector[ProcessedItem](ctx, 10)
+
+worker := pool.WorkerFunc[Item](func(ctx context.Context, item Item) error {
+    processed := process(item)
+    
+    // only collect items meeting criteria
+    if processed.Score > threshold {
+        collector.Submit(processed)
+    }
+    
+    return nil
+})
 ```
 
 ### API Reference
 
 ```go
-// create new collector
-collector := pool.NewCollector[ResultType](ctx, bufferSize)
+// NewCollector creates a collector with specified buffer size
+// Buffer size affects how many results can be pending before workers block
+func NewCollector[V any](ctx context.Context, size int) *Collector[V]
 
-// submit result to collector
-collector.Submit(result)
+// Submit sends a result to the collector (blocks if buffer is full)
+func (c *Collector[V]) Submit(v V)
 
-// close collector when done submitting
-collector.Close()
+// Close signals no more results will be submitted
+// Must be called when all workers are done submitting
+func (c *Collector[V]) Close()
 
-// iterate over results
+// Iter returns an iterator for processing results as they arrive
+// Returns (zero-value, error) when context is cancelled
+// Returns when Close() is called and all results are consumed
+func (c *Collector[V]) Iter() iter.Seq2[V, error]
+
+// All collects all results into a slice
+// Blocks until Close() is called or context is cancelled
+func (c *Collector[V]) All() ([]V, error)
+```
+
+### Iteration Methods
+
+#### Method 1: Range-based Iteration
+Process results as they arrive:
+```go
 for result, err := range collector.Iter() {
-    // process result
+    if err != nil {
+        return fmt.Errorf("collection cancelled: %w", err)
+    }
+    processResult(result)
 }
+```
 
-// get all results
+#### Method 2: Collect All
+Wait for all results before processing:
+```go
 results, err := collector.All()
+if err != nil {
+    return fmt.Errorf("collection failed: %w", err)
+}
+// process all results at once
 ```
 
 ### Best Practices
 
-1. **Buffer Size**: Choose based on expected throughput and memory constraints
-   - Too small: may block workers
-   - Too large: may use excessive memory
-
-2. **Error Handling**: Always check error from iterator
+1. **Buffer Size Selection**
    ```go
+   // Match worker count for balanced flow
+   collector := pool.NewCollector[T](ctx, workerCount)
+   
+   // Larger buffer for bursty processing
+   collector := pool.NewCollector[T](ctx, workerCount * 10)
+   
+   // Smaller buffer to limit memory usage
+   collector := pool.NewCollector[T](ctx, 1)
+   ```
+
+2. **Proper Cleanup Sequence**
+   ```go
+   // 1. Close pool first (no more work)
+   p.Close(ctx)
+   
+   // 2. Wait for workers to finish
+   p.Wait(ctx)
+   
+   // 3. Close collector (no more results)
+   collector.Close()
+   
+   // 4. Process remaining results
    for result, err := range collector.Iter() {
-       if err != nil {
-           // handle context cancellation
-           return err
-       }
+       // ...
    }
    ```
 
-3. **Context Usage**: Pass context that matches pool's lifecycle
+3. **Context Handling**
    ```go
-   collector := pool.NewCollector[Result](poolCtx, size)
+   // Use same context for pool and collector
+   ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+   defer cancel()
+   
+   collector := pool.NewCollector[Result](ctx, 10)
+   p := pool.New[Input](5, worker)
    ```
 
-4. **Cleanup**: Close collector when done submitting
+4. **Error Propagation**
    ```go
-   defer collector.Close()
+   // Don't let worker errors stop collection
+   p := pool.New[T](5, worker).WithContinueOnError()
+   
+   // Collect errors separately
+   type Result struct {
+       Data  ProcessedData
+       Error error
+   }
    ```
+
+### Common Pitfalls
+
+1. **Forgetting to Close**: Always close the collector after all submissions
+2. **Buffer Size Too Small**: Can cause workers to block waiting for consumer
+3. **Context Mismatch**: Using different contexts for pool and collector
+4. **Not Handling Iterator Error**: Always check the error from `Iter()`
    
 ## Performance
 
