@@ -63,7 +63,6 @@ type Stats struct {
 }
 
 // String returns stats info formatted as string
-// String returns stats info formatted as string
 func (s Stats) String() string {
 	var metrics []string
 
