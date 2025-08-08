@@ -111,7 +111,6 @@ func NewStateful[T any](size int, maker func() Worker[T]) *WorkerGroup[T] {
 		workerMaker:    maker,
 		workerChanSize: 1,
 		batchSize:      10, // default batch size
-		ctx:            context.Background(),
 
 		// initialize channels
 		workersCh:     make([]chan T, size),
