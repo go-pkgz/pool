@@ -160,6 +160,44 @@ func TestPool_StatefulWorker(t *testing.T) {
 	assert.NoError(t, p.Close(context.Background()))
 }
 
+func TestPool_WithWorkerChanSize(t *testing.T) {
+	worker := WorkerFunc[int](func(_ context.Context, v int) error {
+		return nil
+	})
+
+	t.Run("New with custom channel size", func(t *testing.T) {
+		p := New[int](2, worker).WithWorkerChanSize(10)
+
+		// channels should have the configured size
+		for i, ch := range p.workersCh {
+			assert.Equal(t, 10, cap(ch), "worker channel %d should have capacity 10", i)
+		}
+		for i, ch := range p.workerBatchCh {
+			assert.Equal(t, 10, cap(ch), "batch channel %d should have capacity 10", i)
+		}
+	})
+
+	t.Run("NewStateful with custom channel size", func(t *testing.T) {
+		p := NewStateful[int](2, func() Worker[int] { return worker }).WithWorkerChanSize(15)
+
+		// channels should have the configured size
+		for i, ch := range p.workersCh {
+			assert.Equal(t, 15, cap(ch), "worker channel %d should have capacity 15", i)
+		}
+		for i, ch := range p.workerBatchCh {
+			assert.Equal(t, 15, cap(ch), "batch channel %d should have capacity 15", i)
+		}
+	})
+
+	t.Run("default channel size", func(t *testing.T) {
+		p := New[int](2, worker)
+		// without WithWorkerChanSize, should use default size of 1
+		for i, ch := range p.workersCh {
+			assert.Equal(t, 1, cap(ch), "worker channel %d should have default capacity 1", i)
+		}
+	})
+}
+
 func TestPool_Wait(t *testing.T) {
 	processed := make(map[string]bool)
 	var mu sync.Mutex

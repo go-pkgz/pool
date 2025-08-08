@@ -138,6 +138,13 @@ func (p *WorkerGroup[T]) WithWorkerChanSize(size int) *WorkerGroup[T] {
 	if size < 1 {
 		p.workerChanSize = 1
 	}
+
+	// recreate channels with new size
+	for i := range p.poolSize {
+		p.workersCh[i] = make(chan T, p.workerChanSize)
+		p.workerBatchCh[i] = make(chan []T, p.workerChanSize)
+	}
+
 	return p
 }
 
