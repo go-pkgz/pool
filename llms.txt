@@ -1,0 +1,219 @@
+# pool - Go Worker Pool Library
+
+> LLM-optimized documentation. For full docs see README.md
+
+## Quick Reference
+
+```go
+import "github.com/go-pkgz/pool"
+import "github.com/go-pkgz/pool/metrics"
+import "github.com/go-pkgz/pool/middleware"
+
+// Worker interface
+type Worker[T any] interface {
+    Do(ctx context.Context, v T) error
+}
+
+// Stateless: single shared worker
+p := pool.New[T](workers, pool.WorkerFunc[T](func(ctx context.Context, v T) error {
+    return nil
+}))
+
+// Stateful: per-worker instances
+p := pool.NewStateful[T](workers, func() pool.Worker[T] {
+    return &MyWorker{conn: openConn()}
+})
+
+// Lifecycle
+p.Go(ctx)           // start workers
+p.Submit(item)      // submit work (single producer)
+p.Send(item)        // submit work (concurrent-safe)
+p.Close(ctx)        // signal done + wait
+p.Wait(ctx)         // wait only (if Close called elsewhere)
+```
+
+## When to Use This Library
+
+Use pool when you need:
+- Stateful workers (each worker has own state/resources)
+- Key-based routing (same key → same worker via WithChunkFn)
+- Batching for high-throughput
+- Built-in metrics and observability
+- Middleware (retry, timeout, recovery, rate limiting)
+- Multi-stage pipelines with collectors
+
+Don't use if:
+- Simple fan-out with no state → use errgroup directly
+- Single worker → just use a goroutine
+
+## Configuration Options
+
+```go
+p := pool.New[T](workers, worker).
+    WithBatchSize(10).                  // batch items before processing
+    WithWorkerChanSize(100).            // buffer size per worker
+    WithChunkFn(func(v T) string {...}) // route by key (consistent hashing)
+    WithContinueOnError().              // don't stop on first error
+    WithWorkerCompleteFn(fn).           // called when each worker finishes
+    WithPoolCompleteFn(fn)              // called when ALL workers finish
+```
+
+## Common Patterns
+
+### Pattern 1: Basic Processing
+→ See: examples/basic/main.go
+
+```go
+p := pool.New[string](3, worker)
+p.Go(ctx)
+for _, item := range items {
+    p.Submit(item)
+}
+p.Close(ctx)
+```
+
+### Pattern 2: Collect Results
+→ See: examples/collector_errors/main.go
+
+```go
+collector := pool.NewCollector[Result](ctx, bufferSize)
+worker := pool.WorkerFunc[Input](func(ctx context.Context, v Input) error {
+    collector.Submit(process(v))
+    return nil
+})
+// consume with: for result, err := range collector.Iter() {...}
+```
+
+### Pattern 3: Key-Based Routing
+→ See: examples/chunking/main.go
+
+```go
+// All items with same UserID go to same worker
+p := pool.New[Event](3, worker).WithChunkFn(func(e Event) string {
+    return e.UserID
+})
+```
+
+### Pattern 4: Stateful Workers
+→ See: examples/tokenizer_stateful/main.go
+
+```go
+p := pool.NewStateful[T](workers, func() pool.Worker[T] {
+    return &MyWorker{
+        counts: make(map[string]int),
+        conn:   openConnection(),
+    }
+})
+```
+
+### Pattern 5: Multi-Stage Pipeline
+→ See: examples/direct_chain/main.go, examples/collectors_chain/main.go
+
+```go
+// Stage 1 → Stage 2 coordination via pool completion
+p1 := pool.New[A](...).WithPoolCompleteFn(func(ctx context.Context) error {
+    return p2.Close(ctx)
+})
+```
+
+### Pattern 6: Middleware Stack
+→ See: examples/middleware/main.go
+
+```go
+p := pool.New[T](workers, worker).Use(
+    middleware.Retry[T](3, time.Second),
+    middleware.Timeout[T](5*time.Second),
+    middleware.Recovery[T](panicHandler),
+    middleware.RateLimiter[T](10, 5),
+)
+```
+
+## Metrics
+
+```go
+// Inside worker: track custom metrics
+m := metrics.Get(ctx)
+m.Inc("custom-counter")
+m.Add("bytes-processed", n)
+
+// After processing: get stats
+stats := p.Metrics().GetStats()
+stats.Processed    // items processed
+stats.Errors       // items failed
+stats.RatePerSec   // throughput
+stats.AvgLatency   // wall-clock time per item
+stats.Utilization  // worker busy percentage
+```
+
+## File Map
+
+| File | Purpose |
+|------|---------|
+| pool.go | Core WorkerGroup, New(), NewStateful(), Submit/Send/Close/Wait |
+| collector.go | Collector for async result gathering |
+| metrics/metrics.go | Stats tracking, custom counters, timers |
+| middleware/*.go | Retry, Timeout, Recovery, Validator, RateLimiter |
+| examples/basic/ | Minimal hello world |
+| examples/chunking/ | WithChunkFn for key-based routing |
+| examples/pool_completion/ | Pool vs worker completion callbacks |
+| examples/tokenizer_stateful/ | Stateful workers with per-worker state |
+| examples/tokenizer_stateless/ | Stateless workers with collector |
+| examples/collector_errors/ | Error collection and categorization |
+| examples/middleware/ | All built-in middleware demonstrated |
+| examples/direct_chain/ | Multi-stage pipeline with Send() |
+| examples/collectors_chain/ | Pipeline with collectors |
+| examples/parallel_files/ | Chunk-based file processing |
+
+## API Summary
+
+### pool.WorkerGroup[T]
+- `New[T](size int, worker Worker[T]) *WorkerGroup[T]`
+- `NewStateful[T](size int, maker func() Worker[T]) *WorkerGroup[T]`
+- `Go(ctx) error` - start workers
+- `Submit(v T)` - submit item (not thread-safe)
+- `Send(v T)` - submit item (thread-safe)
+- `Close(ctx) error` - close + wait
+- `Wait(ctx) error` - wait only
+- `Metrics() *metrics.Value` - get metrics
+- `Use(middlewares...) *WorkerGroup[T]` - add middleware
+- `With*(...)` - configuration (call before Go)
+
+### pool.Collector[V]
+- `NewCollector[V](ctx, size) *Collector[V]`
+- `Submit(v V)` - send result
+- `Close()` - signal done
+- `Iter() iter.Seq2[V, error]` - iterate results
+- `All() ([]V, error)` - collect all
+
+### metrics.Value
+- `Get(ctx) *Value` - get from context
+- `Inc(name)` - increment counter
+- `Add(name, n)` - add to counter
+- `GetStats() Stats` - aggregated statistics
+
+### Middleware
+- `type Middleware[T any] func(Worker[T]) Worker[T]` - wraps worker for cross-cutting concerns
+
+## Error Handling
+
+- Default: first error stops the pool
+- `WithContinueOnError()`: accumulates errors, returns last error with count
+- Worker errors don't stop other workers when continue mode enabled
+- Context cancellation signals workers to stop (workers must check ctx.Done())
+
+## Middleware Order
+
+Middleware executes in order provided (first = outermost):
+```go
+p.Use(logging, retry, timeout)
+// execution: logging → retry → timeout → worker
+```
+
+## Architecture Notes
+
+For AI agents working on this codebase, see CLAUDE.md for:
+- Channel architecture details
+- Work distribution algorithms
+- Batching implementation
+- Error handling semantics
+- Key implementation details

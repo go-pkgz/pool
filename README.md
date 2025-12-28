@@ -104,6 +104,8 @@ func main() {
 
 _For more examples, see the [examples](https://github.com/go-pkgz/pool/tree/master/examples) directory._
 
+<!-- For AI/LLM integration, see llms.txt -->
+
 ## Motivation
 
 While Go provides excellent primitives for concurrent programming with goroutines, channels, and sync primitives, building production-ready concurrent data processing systems often requires more sophisticated patterns. This package emerged from real-world needs encountered in various projects where basic concurrency primitives weren't enough.
