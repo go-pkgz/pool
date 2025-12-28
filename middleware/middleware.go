@@ -73,7 +73,7 @@ func Timeout[T any](timeout time.Duration) pool.Middleware[T] {
 
 // Recovery returns a middleware that recovers from panics and converts them to errors.
 // If handler is provided, it will be called with the panic value before the error is returned.
-func Recovery[T any](handler func(interface{})) pool.Middleware[T] {
+func Recovery[T any](handler func(any)) pool.Middleware[T] {
 	return func(next pool.Worker[T]) pool.Worker[T] {
 		return pool.WorkerFunc[T](func(ctx context.Context, v T) (err error) {
 			defer func() {

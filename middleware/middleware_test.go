@@ -101,7 +101,7 @@ func TestTimeout(t *testing.T) {
 
 func TestRecover(t *testing.T) {
 	t.Run("recovers from panic", func(t *testing.T) {
-		var recovered interface{}
+		var recovered any
 		worker := pool.WorkerFunc[string](func(_ context.Context, v string) error {
 			if v == "panic" {
 				panic("test panic")
@@ -109,7 +109,7 @@ func TestRecover(t *testing.T) {
 			return nil
 		})
 
-		p := pool.New[string](1, worker).Use(Recovery[string](func(p interface{}) {
+		p := pool.New[string](1, worker).Use(Recovery[string](func(p any) {
 			recovered = p
 		}))
 		require.NoError(t, p.Go(context.Background()))
@@ -126,8 +126,8 @@ func TestRecover(t *testing.T) {
 			return nil
 		})
 
-		var recovered interface{}
-		p := pool.New[string](1, worker).Use(Recovery[string](func(p interface{}) {
+		var recovered any
+		p := pool.New[string](1, worker).Use(Recovery[string](func(p any) {
 			recovered = p
 		}))
 		require.NoError(t, p.Go(context.Background()))
@@ -214,7 +214,7 @@ func TestRateLimiter(t *testing.T) {
 		require.NoError(t, p.Go(context.Background()))
 
 		// submit 5 tasks - should all process immediately due to burst
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			p.Submit("task")
 		}
 
@@ -240,7 +240,7 @@ func TestRateLimiter(t *testing.T) {
 		require.NoError(t, p.Go(context.Background()))
 
 		// submit 3 tasks
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			p.Submit(fmt.Sprintf("task-%d", i))
 		}
 
@@ -276,7 +276,7 @@ func TestRateLimiter(t *testing.T) {
 		require.NoError(t, p.Go(ctx))
 
 		// submit multiple tasks
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			p.Submit("task")
 		}
 
@@ -320,7 +320,7 @@ func TestRateLimiter(t *testing.T) {
 		require.NoError(t, p.Go(context.Background()))
 
 		// submit 4 tasks
-		for i := 0; i < 4; i++ {
+		for i := range 4 {
 			p.Submit(fmt.Sprintf("task-%d", i))
 		}
 
