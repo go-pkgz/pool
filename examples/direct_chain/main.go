@@ -1,3 +1,6 @@
+// Example direct_chain demonstrates multi-stage processing pipeline with direct
+// pool-to-pool submission using Send() (thread-safe). Workers in one pool submit
+// directly to the next pool, with pool completion callbacks triggering downstream closure.
 package main
 
 import (
@@ -100,7 +103,7 @@ func ProcessStrings(ctx context.Context, input []string) ([]finalData, error) {
 		pCounter.Close(ctx)
 	}()
 
-	var results []finalData
+	results := make([]finalData, 0, 100) // preallocate for expected results
 	for v := range collector.Iter() {
 		results = append(results, v)
 	}

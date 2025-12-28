@@ -1,3 +1,6 @@
+// Example collectors_chain demonstrates multi-stage pipeline using collectors for
+// coordination between pools. Each stage has independent scaling and uses iterator-based
+// streaming for type-safe data transformation between pools.
 package main
 
 import (
@@ -96,7 +99,7 @@ func newSquarePool(ctx context.Context, workers int) *squarePool {
 
 // ProcessStrings demonstrates chaining multiple pools together to create a processing pipeline.
 // Each pool runs concurrently and processes items as they become available from the previous stage.
-func ProcessStrings(ctx context.Context, strings []string) ([]finalData, error) {
+func ProcessStrings(ctx context.Context, inputs []string) ([]finalData, error) {
 	// create all pools before starting any processing
 	counter := newCounterPool(ctx, 2)
 	multiplier := newMultiplierPool(ctx, 4)
@@ -111,8 +114,8 @@ func ProcessStrings(ctx context.Context, strings []string) ([]finalData, error) 
 	// first goroutine feeds input data into the pipeline
 	// we use a goroutine to simulate a real-world scenario where data is coming from an external source
 	go func() {
-		for i := range strings {
-			fmt.Printf("submitting: %q\n", strings[i])
+		for i := range inputs {
+			fmt.Printf("submitting: %q\n", inputs[i])
 			counter.WorkerGroup.Submit(stringData{idx: i, ts: time.Now()})
 			time.Sleep(time.Duration(rand.Intn(3)) * time.Millisecond)
 		}
@@ -142,7 +145,7 @@ func ProcessStrings(ctx context.Context, strings []string) ([]finalData, error) 
 	}()
 
 	// collect final results until all work is done
-	var results []finalData
+	results := make([]finalData, 0, len(inputs))
 	// iter will stop on completion of squares pool which is the last in the chain
 	// this is a blocking operation and will return when all pools are done
 	// we don't need to wait for each pool to finish explicitly, the iter handles it

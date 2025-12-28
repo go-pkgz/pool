@@ -1,3 +1,6 @@
+// Example parallel_files demonstrates chunk-based file processing with stateful workers.
+// Each worker maintains local word counts with custom metrics tracking (long vs short words).
+// Worker completion callbacks merge results from per-worker state.
 package main
 
 import (
@@ -72,7 +75,8 @@ func main() {
 
 	// start pool processing
 	if err := p.Go(ctx); err != nil {
-		log.Fatal(err)
+		log.Printf("failed to start pool: %v", err)
+		return
 	}
 
 	// process files
@@ -80,8 +84,9 @@ func main() {
 		if err != nil || info.IsDir() {
 			return err
 		}
-		if matched, err := filepath.Match(*pattern, filepath.Base(path)); err != nil || !matched {
-			return err
+		matched, matchErr := filepath.Match(*pattern, filepath.Base(path))
+		if matchErr != nil || !matched {
+			return matchErr
 		}
 
 		file, err := os.Open(path)

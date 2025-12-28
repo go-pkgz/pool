@@ -1,3 +1,6 @@
+// Example collector_errors demonstrates error collection and categorization patterns.
+// It shows how to capture both successes and failures with detailed metadata,
+// group errors by type, and calculate timing statistics for analysis.
 package main
 
 import (
@@ -6,7 +9,6 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -45,12 +47,12 @@ func main() {
 	// start the pool
 	if err := p.Go(ctx); err != nil {
 		fmt.Printf("Failed to start pool: %v\n", err)
-		os.Exit(1)
+		return
 	}
 
 	// submit jobs in the background, this is usually done in a separate goroutine
 	go func() {
-		for i := 0; i < *jobs; i++ {
+		for i := range *jobs {
 			jobID := fmt.Sprintf("job-%03d", i+1)
 			p.Submit(jobID)
 		}
@@ -70,7 +72,7 @@ func main() {
 	}()
 
 	// collect results using the collector's Iter method
-	var results []Result
+	results := make([]Result, 0, *jobs)
 	for result, err := range collector.Iter() {
 		if err != nil {
 			fmt.Printf("Collector error: %v\n", err)
@@ -187,7 +189,7 @@ func worker(p workerParam) func(ctx context.Context, jobID string) error {
 				}
 
 				if p.verbose {
-					fmt.Printf("❌ %s failed: %v\n", jobID, err)
+					fmt.Printf("[FAIL] %s: %v\n", jobID, err)
 				}
 
 				// submit error result to collector
@@ -204,7 +206,7 @@ func worker(p workerParam) func(ctx context.Context, jobID string) error {
 			}
 
 			if p.verbose {
-				fmt.Printf("✅ %s completed successfully\n", jobID)
+				fmt.Printf("[OK] %s completed\n", jobID)
 			}
 
 			// submit success result to collector
