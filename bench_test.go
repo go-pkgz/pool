@@ -18,13 +18,13 @@ import (
 func benchTask(size int) []int { //nolint:unparam // size is used in the benchmark
 	task := func(n int) int { // simulate some CPU work
 		sum := 0
-		for i := 0; i < n; i++ {
+		for i := range n {
 			sum += i
 		}
 		return sum
 	}
 	res := make([]int, 0, size)
-	for i := 0; i < size; i++ {
+	for range size {
 		res = append(res, task(1))
 	}
 	return res
@@ -44,7 +44,7 @@ func TestPoolPerf(t *testing.T) {
 		}()
 		g, _ := errgroup.WithContext(ctx)
 		g.SetLimit(8)
-		for i := 0; i < 1000000; i++ {
+		for range 1000000 {
 			g.Go(func() error {
 				benchTask(n)
 				atomic.AddInt32(&count2, 1)
@@ -68,7 +68,7 @@ func TestPoolPerf(t *testing.T) {
 		p := New[int](8, worker)
 		require.NoError(t, p.Go(ctx))
 		go func() {
-			for i := 0; i < 1000000; i++ {
+			for i := range 1000000 {
 				p.Submit(i)
 			}
 			assert.NoError(t, p.Close(ctx))
@@ -92,7 +92,7 @@ func TestPoolPerf(t *testing.T) {
 		p := New[int](8, worker).WithWorkerChanSize(100)
 		require.NoError(t, p.Go(ctx))
 		go func() {
-			for i := 0; i < 1000000; i++ {
+			for i := range 1000000 {
 				p.Submit(i)
 			}
 			assert.NoError(t, p.Close(ctx))
@@ -116,7 +116,7 @@ func TestPoolPerf(t *testing.T) {
 		p := New[int](8, worker).WithWorkerChanSize(100).WithBatchSize(100)
 		require.NoError(t, p.Go(ctx))
 		go func() {
-			for i := 0; i < 1000000; i++ {
+			for i := range 1000000 {
 				p.Submit(i)
 			}
 			assert.NoError(t, p.Close(ctx))
@@ -142,7 +142,7 @@ func TestPoolPerf(t *testing.T) {
 		})
 		require.NoError(t, p.Go(ctx))
 		go func() {
-			for i := 0; i < 1000000; i++ {
+			for i := range 1000000 {
 				p.Submit(i)
 			}
 			assert.NoError(t, p.Close(ctx))
@@ -163,12 +163,12 @@ func BenchmarkPoolCompare(b *testing.B) {
 
 	b.Run("errgroup", func(b *testing.B) {
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			var count int32
 			g, _ := errgroup.WithContext(ctx)
 			g.SetLimit(workers)
 
-			for j := 0; j < iterations; j++ {
+			for range iterations {
 				g.Go(func() error {
 					benchTask(n)
 					atomic.AddInt32(&count, 1)
@@ -182,7 +182,7 @@ func BenchmarkPoolCompare(b *testing.B) {
 
 	b.Run("pool default", func(b *testing.B) {
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			var count int32
 			p := New[int](workers, WorkerFunc[int](func(context.Context, int) error {
 				benchTask(n)
@@ -192,7 +192,7 @@ func BenchmarkPoolCompare(b *testing.B) {
 
 			require.NoError(b, p.Go(ctx))
 			go func() {
-				for j := 0; j < iterations; j++ {
+				for j := range iterations {
 					p.Submit(j)
 				}
 				p.Close(ctx)
@@ -204,7 +204,7 @@ func BenchmarkPoolCompare(b *testing.B) {
 
 	b.Run("pool with chan=100", func(b *testing.B) {
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			var count int32
 			p := New[int](workers, WorkerFunc[int](func(context.Context, int) error {
 				benchTask(n)
@@ -214,7 +214,7 @@ func BenchmarkPoolCompare(b *testing.B) {
 
 			require.NoError(b, p.Go(ctx))
 			go func() {
-				for j := 0; j < iterations; j++ {
+				for j := range iterations {
 					p.Submit(j)
 				}
 				p.Close(ctx)
@@ -226,7 +226,7 @@ func BenchmarkPoolCompare(b *testing.B) {
 
 	b.Run("pool with batching", func(b *testing.B) {
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			var count int32
 			p := New[int](workers, WorkerFunc[int](func(context.Context, int) error {
 				benchTask(n)
@@ -236,7 +236,7 @@ func BenchmarkPoolCompare(b *testing.B) {
 
 			require.NoError(b, p.Go(ctx))
 			go func() {
-				for j := 0; j < iterations; j++ {
+				for j := range iterations {
 					p.Submit(j)
 				}
 				p.Close(ctx)
@@ -248,7 +248,7 @@ func BenchmarkPoolCompare(b *testing.B) {
 
 	b.Run("pool with batching and chunking", func(b *testing.B) {
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			var count int32
 			p := New[int](workers, WorkerFunc[int](func(context.Context, int) error {
 				benchTask(n)
@@ -260,7 +260,7 @@ func BenchmarkPoolCompare(b *testing.B) {
 
 			require.NoError(b, p.Go(ctx))
 			go func() {
-				for j := 0; j < iterations; j++ {
+				for j := range iterations {
 					p.Submit(j)
 				}
 				p.Close(ctx)
@@ -303,7 +303,7 @@ func TestPoolWithProfiling(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		for i := 0; i < iterations; i++ {
+		for i := range iterations {
 			p.Submit(i)
 		}
 		p.Close(ctx)

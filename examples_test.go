@@ -260,7 +260,7 @@ func Example_fibCalculator() {
 
 		// calculate fibonacci number
 		var a, b uint64 = 0, 1
-		for i := 0; i < n; i++ {
+		for range n {
 			a, b = b, a+b
 		}
 
@@ -311,7 +311,7 @@ func Example_chainedCalculation() {
 
 	fibWorker := WorkerFunc[int](func(_ context.Context, n int) error {
 		var a, b uint64 = 0, 1
-		for i := 0; i < n; i++ {
+		for range n {
 			a, b = b, a+b
 		}
 		stage1Collector.Submit(FibResult{n: n, fib: a})
@@ -454,7 +454,7 @@ func Example_middleware() {
 		return func(next Worker[string]) Worker[string] {
 			return WorkerFunc[string](func(ctx context.Context, v string) error {
 				var lastErr error
-				for i := 0; i < attempts; i++ {
+				for i := range attempts {
 					var err error
 					if err = next.Do(ctx, v); err == nil {
 						return nil

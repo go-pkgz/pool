@@ -28,6 +28,7 @@ linters:
     - unparam
     - unused
     - nestif
+    - modernize
   settings:
     goconst:
       min-len: 2

@@ -164,10 +164,10 @@ func TestMetrics_Concurrent(t *testing.T) {
 		var wg sync.WaitGroup
 		wg.Add(goroutines)
 
-		for i := 0; i < goroutines; i++ {
+		for range goroutines {
 			go func() {
 				defer wg.Done()
-				for j := 0; j < iterations; j++ {
+				for range iterations {
 					m.Inc("counter")
 					val := m.Get("counter")
 					assert.Positive(t, val)
@@ -188,12 +188,12 @@ func TestMetrics_Concurrent(t *testing.T) {
 		wg.Add(workers)
 
 		// each worker operates on its own stats
-		for wid := 0; wid < workers; wid++ {
+		for wid := range workers {
 			go func(id int) {
 				defer wg.Done()
 				const iterations = 1000
 
-				for j := 0; j < iterations; j++ {
+				for range iterations {
 					m.IncProcessed(id)
 					end := m.StartTimer(id, TimerProc)
 					time.Sleep(time.Microsecond)
@@ -208,7 +208,7 @@ func TestMetrics_Concurrent(t *testing.T) {
 		assert.Greater(t, stats.ProcessingTime, time.Duration(0))
 
 		// verify each worker's stats are accurate
-		for wid := 0; wid < workers; wid++ {
+		for wid := range workers {
 			assert.Equal(t, 1000, m.workerStats[wid].Processed)
 			assert.Greater(t, m.workerStats[wid].ProcessingTime, time.Duration(0))
 		}

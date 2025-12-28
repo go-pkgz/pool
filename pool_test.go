@@ -57,7 +57,7 @@ func TestPool_ChunkDistribution(t *testing.T) {
 	require.NoError(t, p.Go(context.Background()))
 
 	// submit same value multiple times, should always go to same worker
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		p.Submit("test1")
 	}
 	require.NoError(t, p.Close(context.Background()))
@@ -154,7 +154,7 @@ func TestPool_StatefulWorker(t *testing.T) {
 	require.NoError(t, p.Go(context.Background()))
 
 	// submit more items to increase chance of concurrent processing
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		p.Submit("test")
 	}
 	assert.NoError(t, p.Close(context.Background()))
@@ -287,7 +287,7 @@ func TestPool_Distribution(t *testing.T) {
 		require.NoError(t, p.Go(context.Background()))
 
 		const n = 10000
-		for i := 0; i < n; i++ {
+		for i := range n {
 			p.Submit(i)
 		}
 		require.NoError(t, p.Close(context.Background()))
@@ -315,7 +315,7 @@ func TestPool_Distribution(t *testing.T) {
 		require.NoError(t, p.Go(context.Background()))
 
 		const n = 10000
-		for i := 0; i < n; i++ {
+		for i := range n {
 			p.Submit(i)
 		}
 		require.NoError(t, p.Close(context.Background()))
@@ -339,7 +339,7 @@ func TestPool_Metrics(t *testing.T) {
 		p := New[int](2, worker)
 		require.NoError(t, p.Go(context.Background()))
 
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			p.Submit(i)
 		}
 		require.NoError(t, p.Close(context.Background()))
@@ -365,7 +365,7 @@ func TestPool_Metrics(t *testing.T) {
 		p := New[int](2, worker).WithContinueOnError()
 		require.NoError(t, p.Go(context.Background()))
 
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			p.Submit(i)
 		}
 		require.Error(t, p.Close(context.Background()))
@@ -394,7 +394,7 @@ func TestPool_Metrics(t *testing.T) {
 		p.Submit(2)
 
 		// wait for both items to be processed
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			select {
 			case <-processed:
 			case <-time.After(time.Second):
@@ -433,7 +433,7 @@ func TestPool_Metrics(t *testing.T) {
 
 		// submit enough items to ensure both workers get some
 		n := 100
-		for i := 0; i < n; i++ {
+		for i := range n {
 			p.Submit(i)
 		}
 		require.Error(t, p.Close(context.Background()))
@@ -688,12 +688,12 @@ func TestPool_TimingUnderLoad(t *testing.T) {
 	require.NoError(t, p.Go(context.Background()))
 
 	// submit all tasks
-	for i := 0; i < tasks; i++ {
+	for i := range tasks {
 		p.Submit(i)
 	}
 
 	// wait for all tasks to complete
-	for i := 0; i < tasks; i++ {
+	for range tasks {
 		select {
 		case <-done:
 		case <-time.After(2 * time.Second):
@@ -910,7 +910,7 @@ func TestMiddleware_Practical(t *testing.T) {
 			return func(next Worker[string]) Worker[string] {
 				return WorkerFunc[string](func(ctx context.Context, v string) error {
 					var lastErr error
-					for i := 0; i < maxAttempts; i++ {
+					for range maxAttempts {
 						var err error
 						if err = next.Do(ctx, v); err == nil {
 							return nil
@@ -989,7 +989,7 @@ func TestPool_Batch(t *testing.T) {
 		require.NoError(t, p.Go(context.Background()))
 
 		// submit 8 items - should make 2 full batches and 1 partial
-		for i := 0; i < 8; i++ {
+		for i := range 8 {
 			p.Submit(fmt.Sprintf("v%d", i))
 		}
 		require.NoError(t, p.Close(context.Background()))
@@ -1139,7 +1139,7 @@ func TestPool_Batch(t *testing.T) {
 		require.NoError(t, p.Go(context.Background()))
 
 		// fill batches with items to verify processing of full batches
-		for i := 0; i < 6; i++ {
+		for i := range 6 {
 			p.Submit(fmt.Sprintf("item%d", i))
 			time.Sleep(10 * time.Millisecond) // allow time for processing
 		}
@@ -1229,7 +1229,7 @@ func TestPool_Batch(t *testing.T) {
 		require.NoError(t, p.Go(context.Background()))
 
 		// submit items
-		for i := 0; i < totalItems; i++ {
+		for i := range totalItems {
 			p.Submit(i)
 		}
 		require.NoError(t, p.Close(context.Background()))
@@ -1242,7 +1242,7 @@ func TestPool_Batch(t *testing.T) {
 
 		// verify concurrent processing by checking for overlapping time ranges
 		var overlapped bool
-		for i := 0; i < totalItems/batchSize; i++ {
+		for i := range totalItems / batchSize {
 			for j := i + 1; j < totalItems/batchSize; j++ {
 				// check if batch i and j overlapped in time
 				if !batchEndTimes[i].Before(batchStartTimes[j]) && !batchEndTimes[j].Before(batchStartTimes[i]) {
@@ -1284,7 +1284,7 @@ func TestPool_DirectModeChunking(t *testing.T) {
 
 	// verify items with same first letter went to the same worker
 	var worker0Items, worker1Items []string
-	processed.Range(func(key, value interface{}) bool {
+	processed.Range(func(key, value any) bool {
 		items := value.([]string)
 		if key.(string) == "worker-0" {
 			worker0Items = items
@@ -1333,7 +1333,7 @@ func TestPool_PoolCompletion(t *testing.T) {
 		require.NoError(t, p.Go(context.Background()))
 
 		// submit enough work for all workers
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			p.Submit(fmt.Sprintf("test%d", i))
 		}
 		require.NoError(t, p.Close(context.Background()))
@@ -1511,7 +1511,7 @@ func TestPool_ChainedBatching(t *testing.T) {
 
 	// submit items
 	inputCount := 100
-	for i := 0; i < inputCount; i++ {
+	for i := range inputCount {
 		p1.Submit(i)
 	}
 	require.NoError(t, p1.Close(context.Background()))
@@ -1542,7 +1542,7 @@ func TestPool_HeavyBatching(t *testing.T) {
 
 	// submit items that should form complete and partial batches
 	const items = 1000
-	for i := 0; i < items; i++ {
+	for i := range items {
 		p.Submit(i)
 	}
 	require.NoError(t, p.Close(context.Background()))
@@ -1584,14 +1584,14 @@ func TestPool_BatchedSend(t *testing.T) {
 	require.NoError(t, p2.Go(context.Background()))
 
 	const items = 1000
-	for i := 0; i < items; i++ {
+	for i := range items {
 		p1.Submit(i)
 	}
 	require.NoError(t, p1.Close(context.Background()))
 
 	// count unique processed items
 	var uniqueProcessed int
-	processed.Range(func(_, _ interface{}) bool {
+	processed.Range(func(_, _ any) bool {
 		uniqueProcessed++
 		return true
 	})

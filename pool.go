@@ -133,10 +133,7 @@ func NewStateful[T any](size int, maker func() Worker[T]) *WorkerGroup[T] {
 // Larger sizes can help with bursty workloads but increase memory usage.
 // Default: 1
 func (p *WorkerGroup[T]) WithWorkerChanSize(size int) *WorkerGroup[T] {
-	p.workerChanSize = size
-	if size < 1 {
-		p.workerChanSize = 1
-	}
+	p.workerChanSize = max(size, 1)
 
 	// recreate per-worker channels with new size
 	for i := range p.poolSize {
