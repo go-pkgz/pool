@@ -1,3 +1,6 @@
+// Example tokenizer_stateless demonstrates stateless workers using WorkerFunc adapter.
+// Workers share a collector for result gathering. This pattern works well when
+// workers don't need to maintain state between processing calls.
 package main
 
 import (
@@ -44,8 +47,7 @@ func main() {
 		}
 
 		// split line into words and submit each word
-		words := strings.Fields(line)
-		for _, word := range words {
+		for word := range strings.FieldsSeq(line) {
 			// check context between words
 			select {
 			case <-ctx.Done():
@@ -71,7 +73,8 @@ func main() {
 
 	// start the pool
 	if err := p.Go(ctx); err != nil {
-		log.Fatal(err)
+		log.Printf("failed to start pool: %v", err)
+		return
 	}
 
 	// read file line by line and submit to pool

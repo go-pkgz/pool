@@ -1,3 +1,6 @@
+// Example tokenizer_stateful demonstrates stateful workers where each worker
+// maintains independent state (word frequency counters). It shows worker completion
+// callbacks for result collection and per-worker statistics tracking.
 package main
 
 import (
@@ -36,8 +39,7 @@ func (w *TokenizingWorker) Do(ctx context.Context, line string) error {
 	}
 
 	// split line into words and clean them up
-	words := strings.Fields(line)
-	for _, word := range words {
+	for word := range strings.FieldsSeq(line) {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -100,7 +102,8 @@ func main() {
 
 	// start the pool
 	if err := p.Go(ctx); err != nil {
-		log.Fatal(err)
+		log.Printf("failed to start pool: %v", err)
+		return
 	}
 
 	// read file line by line and submit to pool

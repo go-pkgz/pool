@@ -6,6 +6,18 @@ This directory contains examples demonstrating various aspects of the [go-pkgz/p
 
 ## Available Examples
 
+### [basic](./basic)
+Minimal "hello world" example to get started quickly. Demonstrates:
+- Simplest pool creation and usage
+- Submitting work items
+- Basic metrics
+
+### [chunking](./chunking)
+Shows how to use WithChunkFn for consistent work distribution by key. Demonstrates:
+- Key-based routing (same key always goes to same worker)
+- Per-key aggregation without synchronization
+- Worker ID tracking via context
+
 ### [tokenizer_stateful](./tokenizer_stateful)
 Shows how to use stateful workers where each worker maintains its own independent state (word frequency counters). Demonstrates:
 - Worker state isolation
@@ -53,11 +65,23 @@ Shows how to handle and categorize errors in parallel processing. Demonstrates:
 - Timing information tracking
 - Statistical reporting on errors
 
+### [pool_completion](./pool_completion)
+Shows how to use the pool completion callback for final aggregation. Demonstrates:
+- Pool completion callback (WithPoolCompleteFn)
+- Final cleanup when all workers finish
+- Difference between worker and pool completion callbacks
+
 ## Running Examples
 
 Each example can be run from its directory:
 ```bash
-cd tokenizer_stateful
+cd basic
+go run main.go
+
+cd ../chunking
+go run main.go
+
+cd ../tokenizer_stateful
 go run main.go -file input.txt
 
 cd ../tokenizer_stateless
@@ -77,15 +101,19 @@ go run main.go
 
 cd ../collector_errors
 go run main.go -workers 8 -jobs 100 -error-rate 0.3
+
+cd ../pool_completion
+go run main.go
 ```
 
 ## Common Patterns
 
 While the examples are simplified, they showcase important pool package features:
+- Basic pool usage (basic)
+- Consistent work distribution by key (chunking)
 - Worker state management (stateful vs stateless)
 - Result collection strategies
 - Error handling approaches
 - Metrics and monitoring
-- Work distribution patterns
 - Middleware integration
 - Multi-stage processing pipelines

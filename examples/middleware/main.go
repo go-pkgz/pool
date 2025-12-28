@@ -1,4 +1,6 @@
-// file: examples/middleware/main.go
+// Example middleware demonstrates built-in middleware (Validator, Retry, Recovery,
+// RateLimiter) and custom middleware implementation (structured logging).
+// Shows middleware stacking and composition for robust error handling.
 package main
 
 import (
@@ -82,7 +84,7 @@ func runPool(ctx context.Context, p *pool.WorkerGroup[Task], cfg config) error {
 	// demonstrate rate limiting
 	cfg.logger.Info("submitting rate-limited tasks")
 	start := time.Now()
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		p.Submit(Task{ID: fmt.Sprintf("rate-%d", i), Priority: 3, Payload: "rate limited task"})
 	}
 
@@ -103,7 +105,7 @@ func makePool(cfg config) *pool.WorkerGroup[Task] {
 	return pool.New[Task](cfg.workers, makeWorker()).Use(
 		middleware.Validator(makeValidator()),            // validate tasks
 		middleware.Retry[Task](cfg.retries, time.Second), // retry failed tasks
-		middleware.Recovery[Task](func(p interface{}) { // recover from panics
+		middleware.Recovery[Task](func(p any) { // recover from panics
 			cfg.logger.Error("panic recovered", "error", fmt.Sprint(p))
 		}),
 		middleware.RateLimiter[Task](5, 3), // rate limit: 5 tasks/second with burst of 3
