@@ -56,6 +56,9 @@
 //	    return err
 //	}
 //
+// Note: all With* configuration methods are builder-style and must be called before Go().
+// Calling them after Go() is unsupported.
+//
 // For stateful operations (like database connections, file handles, etc.):
 //
 //	maker := func() pool.Worker[string] {

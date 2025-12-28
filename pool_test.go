@@ -196,6 +196,22 @@ func TestPool_WithWorkerChanSize(t *testing.T) {
 			assert.Equal(t, 1, cap(ch), "worker channel %d should have default capacity 1", i)
 		}
 	})
+
+	t.Run("shared channels with custom size", func(t *testing.T) {
+		// when WithChunkFn is not used, workers use shared channels
+		p := New[int](2, worker).WithWorkerChanSize(20)
+
+		assert.Equal(t, 20, cap(p.sharedCh), "shared channel should have capacity 20")
+		assert.Equal(t, 20, cap(p.sharedBatchCh), "shared batch channel should have capacity 20")
+	})
+
+	t.Run("shared channels default size", func(t *testing.T) {
+		// shared channels default to poolSize for better throughput with multiple consumers
+		p := New[int](2, worker)
+
+		assert.Equal(t, 2, cap(p.sharedCh), "shared channel should have default capacity equal to poolSize")
+		assert.Equal(t, 2, cap(p.sharedBatchCh), "shared batch channel should have default capacity equal to poolSize")
+	})
 }
 
 func TestPool_Wait(t *testing.T) {

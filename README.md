@@ -533,7 +533,9 @@ Important notes:
 
 ## Optional parameters
 
-Configure pool behavior using With methods:
+Configure pool behavior using With methods. All With* methods are builder-style
+configuration and must be called before `Go()`; calling them after `Go()` is
+unsupported and may lead to deadlocks or no-ops.
 
 ```go
 p := pool.New[string](2, worker).  // pool with 2 workers

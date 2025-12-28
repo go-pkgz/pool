@@ -138,11 +138,15 @@ func (p *WorkerGroup[T]) WithWorkerChanSize(size int) *WorkerGroup[T] {
 		p.workerChanSize = 1
 	}
 
-	// recreate channels with new size
+	// recreate per-worker channels with new size
 	for i := range p.poolSize {
 		p.workersCh[i] = make(chan T, p.workerChanSize)
 		p.workerBatchCh[i] = make(chan []T, p.workerChanSize)
 	}
+
+	// recreate shared channels with new size
+	p.sharedCh = make(chan T, p.workerChanSize)
+	p.sharedBatchCh = make(chan []T, p.workerChanSize)
 
 	return p
 }

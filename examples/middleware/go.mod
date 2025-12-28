@@ -5,8 +5,8 @@ go 1.24
 require github.com/go-pkgz/pool v0.7.0
 
 require (
-	golang.org/x/sync v0.14.0 // indirect
-	golang.org/x/time v0.11.0 // indirect
+	golang.org/x/sync v0.15.0 // indirect
+	golang.org/x/time v0.12.0 // indirect
 )
 
 replace github.com/go-pkgz/pool => ../..
