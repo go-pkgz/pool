@@ -141,10 +141,13 @@ func TestPool_StatefulWorker(t *testing.T) {
 		count int
 	}
 
+	var totalProcessed atomic.Int32
+
 	workerMaker := func() Worker[string] {
 		w := &statefulWorker{}
 		return WorkerFunc[string](func(_ context.Context, _ string) error {
 			w.count++
+			totalProcessed.Add(1)
 			time.Sleep(time.Millisecond) // even with sleep it's safe
 			return nil
 		})
@@ -158,6 +161,7 @@ func TestPool_StatefulWorker(t *testing.T) {
 		p.Submit("test")
 	}
 	assert.NoError(t, p.Close(context.Background()))
+	assert.Equal(t, int32(100), totalProcessed.Load(), "all items should be processed by stateful workers")
 }
 
 func TestPool_WithWorkerChanSize(t *testing.T) {
@@ -1601,4 +1605,146 @@ func TestPool_BatchedSend(t *testing.T) {
 	assert.Equal(t, items, uniqueProcessed, "should process each item exactly once")
 	assert.Equal(t, int32(items), stage1.Load(), "stage1 count should match input")
 	assert.Equal(t, int32(items), stage2.Load(), "stage2 count should match input")
+}
+
+func TestPool_DoubleGoActivation(t *testing.T) {
+	worker := WorkerFunc[int](func(context.Context, int) error { return nil })
+	p := New[int](2, worker)
+
+	require.NoError(t, p.Go(context.Background()))
+
+	// second Go() call should return error
+	err := p.Go(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already activated")
+
+	require.NoError(t, p.Close(context.Background()))
+}
+
+func TestPool_NegativeBatchSize(t *testing.T) {
+	var processed atomic.Int32
+	worker := WorkerFunc[int](func(context.Context, int) error {
+		processed.Add(1)
+		return nil
+	})
+
+	// negative batch size should be treated as 0 (direct mode, no batching)
+	p := New[int](2, worker).WithBatchSize(-1)
+	require.NoError(t, p.Go(context.Background()))
+
+	p.Submit(1)
+	p.Submit(2)
+	p.Submit(3)
+
+	require.NoError(t, p.Close(context.Background()))
+	assert.Equal(t, int32(3), processed.Load(), "all items should be processed")
+}
+
+func TestPool_CloseRespectsContextTimeout(t *testing.T) {
+	started := make(chan struct{})
+	worker := WorkerFunc[int](func(ctx context.Context, v int) error {
+		close(started)
+		<-ctx.Done() // block until pool context is cancelled
+		return ctx.Err()
+	})
+
+	// t.Context() is cancelled when test ends, ensuring worker cleanup
+	p := New[int](1, worker).WithBatchSize(0)
+	require.NoError(t, p.Go(t.Context()))
+	p.Submit(1)
+
+	<-started // wait for worker to start processing
+
+	// close with short timeout - should return timeout error, not hang
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	err := p.Close(ctx)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func TestPool_WaitRespectsContextTimeout(t *testing.T) {
+	started := make(chan struct{})
+	worker := WorkerFunc[int](func(ctx context.Context, v int) error {
+		close(started)
+		<-ctx.Done() // block until pool context is cancelled
+		return ctx.Err()
+	})
+
+	// t.Context() is cancelled when test ends, ensuring worker cleanup
+	p := New[int](1, worker).WithBatchSize(0)
+	require.NoError(t, p.Go(t.Context()))
+	p.Submit(1)
+
+	<-started // wait for worker to start processing
+
+	// wait with short timeout - should return timeout error, not hang
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	err := p.Wait(ctx)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func TestPool_CloseWithCancelledContext(t *testing.T) {
+	worker := WorkerFunc[int](func(context.Context, int) error { return nil })
+	p := New[int](1, worker)
+	require.NoError(t, p.Go(context.Background()))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel
+
+	err := p.Close(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestPool_CloseFlushDoesNotDeadlock(t *testing.T) {
+	// worker that fails immediately, causing workers to exit
+	worker := WorkerFunc[int](func(ctx context.Context, v int) error {
+		return errors.New("fail immediately")
+	})
+
+	p := New[int](1, worker).WithBatchSize(10)
+	require.NoError(t, p.Go(context.Background()))
+
+	// submit items but don't fill batch - these sit in accumulator
+	for i := range 5 {
+		p.Submit(i)
+	}
+
+	// close with timeout - should not deadlock trying to flush to dead worker
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	err := p.Close(ctx)
+	// expect error (either from worker failure or timeout), but not hang
+	require.Error(t, err)
+}
+
+func TestPool_WorkerCompleteFnErrorWithExistingError(t *testing.T) {
+	workerErr := errors.New("worker error")
+	completeErr := errors.New("complete callback error")
+
+	worker := WorkerFunc[int](func(context.Context, int) error {
+		return workerErr
+	})
+
+	var completeCalled atomic.Bool
+	p := New[int](1, worker).
+		WithContinueOnError().
+		WithWorkerCompleteFn(func(context.Context, int, Worker[int]) error {
+			completeCalled.Store(true)
+			return completeErr
+		})
+
+	require.NoError(t, p.Go(context.Background()))
+	p.Submit(1)
+	err := p.Close(context.Background())
+
+	// with continueOnError, we expect to get an error
+	require.Error(t, err)
+	// worker complete function should have been called
+	assert.True(t, completeCalled.Load(), "worker complete function should be called")
 }

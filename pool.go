@@ -40,7 +40,7 @@ type WorkerGroup[T any] struct {
 	sharedBatchCh chan []T   // shared batch channel
 
 	eg        *errgroup.Group
-	activated bool
+	activated atomic.Bool
 	ctx       context.Context
 
 	sendMu sync.Mutex
@@ -180,9 +180,12 @@ func (p *WorkerGroup[T]) WithContinueOnError() *WorkerGroup[T] {
 
 // WithBatchSize enables item batching with specified size.
 // Items are accumulated until batch is full before processing.
-// Set to 0 to disable batching.
+// Set to 0 to disable batching. Negative values are treated as 0.
 // Default: 10
 func (p *WorkerGroup[T]) WithBatchSize(size int) *WorkerGroup[T] {
+	if size < 0 {
+		size = 0
+	}
 	p.batchSize = size
 	if size > 0 {
 		// initialize accumulators with capacity
@@ -268,10 +271,9 @@ func (p *WorkerGroup[T]) Send(v T) {
 // Go activates the pool and starts worker goroutines.
 // Must be called before submitting items.
 func (p *WorkerGroup[T]) Go(ctx context.Context) error {
-	if p.activated {
-		return fmt.Errorf("workers poll already activated")
+	if !p.activated.CompareAndSwap(false, true) {
+		return fmt.Errorf("workers pool already activated")
 	}
-	defer func() { p.activated = true }()
 
 	var egCtx context.Context
 	p.eg, egCtx = errgroup.WithContext(ctx)
@@ -327,12 +329,12 @@ func (p *WorkerGroup[T]) workerProc(wCtx context.Context, r workerRequest[T]) fu
 		processItem := func(v T) error {
 			waitTime := time.Since(lastActivity)
 			r.m.AddWaitTime(r.id, waitTime)
-			lastActivity = time.Now()
 
 			procEndTmr := r.m.StartTimer(r.id, metrics.TimerProc)
-			defer procEndTmr()
 
 			if err := worker.Do(wCtx, v); err != nil {
+				procEndTmr()
+				lastActivity = time.Now() // update after processing completes
 				r.m.IncErrors(r.id)
 				totalErrs++
 				if !p.continueOnError {
@@ -341,6 +343,8 @@ func (p *WorkerGroup[T]) workerProc(wCtx context.Context, r workerRequest[T]) fu
 				lastErr = fmt.Errorf("worker %d failed: %w", r.id, err)
 				return nil // continue on error
 			}
+			procEndTmr()
+			lastActivity = time.Now() // update after processing completes
 			r.m.IncProcessed(r.id)
 			return nil
 		}
@@ -349,16 +353,16 @@ func (p *WorkerGroup[T]) workerProc(wCtx context.Context, r workerRequest[T]) fu
 		processBatch := func(items []T) error {
 			waitTime := time.Since(lastActivity)
 			r.m.AddWaitTime(r.id, waitTime)
-			lastActivity = time.Now()
 
 			procEndTmr := r.m.StartTimer(r.id, metrics.TimerProc)
-			defer procEndTmr()
 
 			for _, v := range items {
 				if err := worker.Do(wCtx, v); err != nil {
 					r.m.IncErrors(r.id)
 					totalErrs++
 					if !p.continueOnError {
+						procEndTmr()
+						lastActivity = time.Now() // update after processing completes
 						return fmt.Errorf("worker %d failed: %w", r.id, err)
 					}
 					lastErr = fmt.Errorf("worker %d failed: %w", r.id, err)
@@ -366,6 +370,8 @@ func (p *WorkerGroup[T]) workerProc(wCtx context.Context, r workerRequest[T]) fu
 				}
 				r.m.IncProcessed(r.id)
 			}
+			procEndTmr()
+			lastActivity = time.Now() // update after processing completes
 			return nil
 		}
 
@@ -437,49 +443,93 @@ func (p *WorkerGroup[T]) finishWorker(ctx context.Context, id int, worker Worker
 }
 
 // Close pool. Has to be called by consumer as the indication of "all records submitted".
-// The call is blocking till all processing completed by workers. After this call poll can't be reused.
-// Returns an error if any happened during the run
+// The call is blocking till all processing completed by workers or context is cancelled.
+// After this call pool can't be reused. Returns an error if any happened during the run.
+// Note: Close always closes channels to ensure workers can exit, even if context times out.
+// Workers must respect either the context or channel closure to exit cleanly.
 func (p *WorkerGroup[T]) Close(ctx context.Context) error {
-	// if context canceled, return immediately
-	switch {
-	case ctx.Err() != nil:
-		return ctx.Err()
-	default:
-	}
+	ctxErr := p.flushAccumulators(ctx)
 
-	// flush any remaining items in accumulators
-	if p.batchSize > 0 {
-		for i, acc := range p.accumulators {
-			if len(acc) > 0 {
-				// ensure we flush any non-empty accumulator, regardless of size
-				if p.chunkFn == nil {
-					p.sharedBatchCh <- acc
-				} else {
-					p.workerBatchCh[i] <- acc
-				}
-				p.accumulators[i] = nil // help GC
-			}
-		}
-	}
-
+	// always close channels to allow workers to exit
 	close(p.sharedCh)
 	close(p.sharedBatchCh)
 	for i := range p.poolSize {
 		close(p.workersCh[i])
 		close(p.workerBatchCh[i])
 	}
-	return p.eg.Wait()
+
+	// if context timed out during flush, return that error
+	if ctxErr != nil {
+		return ctxErr
+	}
+
+	// wait for workers with context respect
+	done := make(chan error, 1)
+	go func() {
+		done <- p.eg.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// flushAccumulators flushes remaining batch items. Returns context error if flush was interrupted.
+func (p *WorkerGroup[T]) flushAccumulators(ctx context.Context) error {
+	// if context already canceled, skip flush
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	if p.batchSize == 0 {
+		return nil
+	}
+
+	for i, acc := range p.accumulators {
+		if len(acc) == 0 {
+			continue
+		}
+
+		ch := p.sharedBatchCh
+		if p.chunkFn != nil {
+			ch = p.workerBatchCh[i]
+		}
+
+		select {
+		case ch <- acc:
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-p.ctx.Done():
+			// pool context cancelled, workers exiting
+		}
+		p.accumulators[i] = nil // help GC
+	}
+	return nil
 }
 
 // Wait till workers completed and the result channel closed.
+// Respects context cancellation and timeouts.
 func (p *WorkerGroup[T]) Wait(ctx context.Context) error {
-	// if context canceled, return immediately
-	switch {
-	case ctx.Err() != nil:
+	// if context already cancelled, return immediately
+	if ctx.Err() != nil {
 		return ctx.Err()
-	default:
 	}
-	return p.eg.Wait()
+
+	// wait for workers with context respect
+	done := make(chan error, 1)
+	go func() {
+		done <- p.eg.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Metrics returns combined metrics from all workers

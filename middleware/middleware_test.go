@@ -201,6 +201,85 @@ func TestValidate(t *testing.T) {
 	})
 }
 
+func TestRetry_InvalidValues(t *testing.T) {
+	t.Run("zero attempts uses default", func(t *testing.T) {
+		var attempts atomic.Int32
+		worker := pool.WorkerFunc[string](func(_ context.Context, v string) error {
+			attempts.Add(1)
+			return nil
+		})
+
+		p := pool.New[string](1, worker).Use(Retry[string](0, 0))
+		require.NoError(t, p.Go(context.Background()))
+
+		p.Submit("test")
+		require.NoError(t, p.Close(context.Background()))
+		assert.Equal(t, int32(1), attempts.Load(), "should process with default attempts")
+	})
+
+	t.Run("negative values use defaults", func(t *testing.T) {
+		var attempts atomic.Int32
+		worker := pool.WorkerFunc[string](func(_ context.Context, v string) error {
+			if attempts.Add(1) <= 2 {
+				return errors.New("temporary error")
+			}
+			return nil
+		})
+
+		p := pool.New[string](1, worker).Use(Retry[string](-1, -1))
+		require.NoError(t, p.Go(context.Background()))
+
+		p.Submit("test")
+		require.NoError(t, p.Close(context.Background()))
+		assert.Equal(t, int32(3), attempts.Load(), "should retry with default max attempts")
+	})
+}
+
+func TestTimeout_InvalidValue(t *testing.T) {
+	t.Run("zero timeout uses default", func(t *testing.T) {
+		worker := pool.WorkerFunc[string](func(_ context.Context, v string) error {
+			return nil
+		})
+
+		p := pool.New[string](1, worker).Use(Timeout[string](0))
+		require.NoError(t, p.Go(context.Background()))
+
+		p.Submit("test")
+		require.NoError(t, p.Close(context.Background()))
+	})
+
+	t.Run("negative timeout uses default", func(t *testing.T) {
+		worker := pool.WorkerFunc[string](func(_ context.Context, v string) error {
+			return nil
+		})
+
+		p := pool.New[string](1, worker).Use(Timeout[string](-1))
+		require.NoError(t, p.Go(context.Background()))
+
+		p.Submit("test")
+		require.NoError(t, p.Close(context.Background()))
+	})
+}
+
+func TestRecovery_PanicWithInt(t *testing.T) {
+	var recovered any
+	worker := pool.WorkerFunc[string](func(_ context.Context, v string) error {
+		panic(42)
+	})
+
+	p := pool.New[string](1, worker).Use(Recovery[string](func(p any) {
+		recovered = p
+	}))
+	require.NoError(t, p.Go(context.Background()))
+
+	p.Submit("test")
+	err := p.Close(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "panic recovered")
+	assert.Contains(t, err.Error(), "42")
+	assert.Equal(t, 42, recovered)
+}
+
 func TestRateLimiter(t *testing.T) {
 	t.Run("allows tasks within rate limit", func(t *testing.T) {
 		var processed atomic.Int32
