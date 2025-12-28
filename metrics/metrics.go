@@ -184,7 +184,9 @@ func (m *Value) IncDropped(wid int) {
 	m.workerStats[wid].Dropped++
 }
 
-// GetStats returns combined stats from all workers
+// GetStats returns combined stats from all workers.
+// For accurate results, call this method after pool completion (Close/Wait returned).
+// Calling during active processing may return inconsistent values due to concurrent writes.
 func (m *Value) GetStats() Stats {
 	var result Stats
 
