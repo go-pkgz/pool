@@ -1,6 +1,6 @@
 # pool [![Build Status](https://github.com/go-pkgz/pool/workflows/build/badge.svg)](https://github.com/go-pkgz/pool/actions) [![Coverage Status](https://coveralls.io/repos/github/go-pkgz/pool/badge.svg?branch=master)](https://coveralls.io/github/go-pkgz/pool?branch=master) [![godoc](https://godoc.org/github.com/go-pkgz/pool?status.svg)](https://godoc.org/github.com/go-pkgz/pool)
 
-`pool` is a Go package that provides a generic, efficient worker pool implementation for parallel task processing. Built for Go 1.23+, it offers a flexible API with features like batching, work distribution strategies, and comprehensive metrics collection.
+`pool` is a Go package that provides a generic, efficient worker pool implementation for parallel task processing. Built for Go 1.24+, it offers a flexible API with features like batching, work distribution strategies, and comprehensive metrics collection.
 
 ## Features
 
@@ -16,7 +16,7 @@
 - Optional completion callbacks
 - Extensible middleware system for custom functionality
 - Built-in middlewares for common tasks
-- No external dependencies except for the testing framework
+- Minimal dependencies (only `golang.org/x/sync` and `golang.org/x/time` at runtime)
 
 ## Quick Start
 
@@ -52,8 +52,8 @@ func main() {
         return nil
     })
 	
-    // create a pool with 5 workers 
-    p := pool.New[string](5, worker).WithContinueOnError(), // don't stop on errors
+    // create a pool with 5 workers
+    p := pool.New[string](5, worker).WithContinueOnError() // don't stop on errors
 
     // start the pool
     if err := p.Go(context.Background()); err != nil {
@@ -233,13 +233,14 @@ p := pool.New[Task](3, worker).WithChunkFn(func(t Task) string {
 
 How distribution works:
 1. Without chunk function:
-   - Items are distributed randomly among workers
+   - Direct mode: Items go to a shared channel, workers compete for items
+   - Batching mode: Items are assigned to random accumulator slots
    - Good for independent tasks
 
 2. With chunk function:
    - Function returns string key for each item
    - Items with the same key always go to the same worker
-   - Uses consistent hashing to map keys to workers
+   - Uses FNV-1a hash to map keys to workers deterministically
 
 When to use custom distribution:
 - Maintain ordering for related items
@@ -425,7 +426,7 @@ The `GetStats()` method returns a comprehensive `Stats` structure with the follo
 **Counters:**
 - `Processed` - total number of successfully processed items
 - `Errors` - total number of items that returned errors
-- `Dropped` - total number of items dropped (e.g., due to context cancellation)
+- `Dropped` - total number of items dropped (user-incrementable via `m.IncDropped(workerID)` where `m` is the metrics object)
 
 **Timing Metrics:**
 - `ProcessingTime` - cumulative time spent processing items (max across workers)
@@ -436,7 +437,7 @@ The `GetStats()` method returns a comprehensive `Stats` structure with the follo
 
 **Derived Statistics:**
 - `RatePerSec` - items processed per second (Processed / TotalTime)
-- `AvgLatency` - average processing time per item (ProcessingTime / Processed)
+- `AvgLatency` - average wall-clock time per item (max ProcessingTime across workers / Processed)
 - `ErrorRate` - percentage of items that failed (Errors / Total)
 - `DroppedRate` - percentage of items dropped (Dropped / Total)
 - `Utilization` - percentage of time spent processing vs waiting (ProcessingTime / (ProcessingTime + WaitTime))
@@ -523,7 +524,7 @@ p := pool.New[string](5, worker).
 The completion callback executes when:
 - All workers have completed processing
 - Errors occurred but pool continued (`WithContinueOnError()`)
-- Does not execute on context cancellation
+- Skipped only on `context.Canceled` (still runs on `context.DeadlineExceeded`)
 
 Important notes:
 - Use `Submit` when sending items from a single goroutine
@@ -538,21 +539,21 @@ configuration and must be called before `Go()`; calling them after `Go()` is
 unsupported and may lead to deadlocks or no-ops.
 
 ```go
-p := pool.New[string](2, worker).  // pool with 2 workers
-    WithBatchSize(10).             // process items in batches
-    WithWorkerChanSize(5).         // set worker channel buffer size
-    WithChunkFn(chunkFn).          // control work distribution
-    WithContinueOnError().         // don't stop on errors
-    WithCompleteFn(completeFn)     // called when worker finishes
+p := pool.New[string](2, worker).        // pool with 2 workers
+    WithBatchSize(10).                   // process items in batches
+    WithWorkerChanSize(5).               // set worker channel buffer size
+    WithChunkFn(chunkFn).                // control work distribution
+    WithContinueOnError().               // don't stop on errors
+    WithWorkerCompleteFn(workerComplete) // called when each worker finishes
 ```
 
 Available options:
 - `WithBatchSize(size int)` - enables batch processing, accumulating items before sending to workers (default: 10)
 - `WithWorkerChanSize(size int)` - sets buffer size for worker channels (default: 1)
-- `WithChunkFn(fn func(T) string)` - controls work distribution by key (default: none, random distribution)
+- `WithChunkFn(fn func(T) string)` - controls work distribution by key (default: none, shared channel)
 - `WithContinueOnError()` - continues processing on errors (default: false)
-- `WithWorkerCompleteFn(fn func(ctx, id, worker))` - called on worker completion (default: none)
-- `WithPoolCompleteFn(fn func(ctx))` - called on pool completion, i.e., when all workers have completed (default: none)
+- `WithWorkerCompleteFn(fn func(ctx context.Context, id int, worker Worker[T]) error)` - called on worker completion (default: none)
+- `WithPoolCompleteFn(fn func(ctx context.Context) error)` - called on pool completion, i.e., when all workers have completed (default: none)
 
 ## Collector
 
