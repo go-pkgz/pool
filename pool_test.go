@@ -333,10 +333,10 @@ func TestPool_Distribution(t *testing.T) {
 
 func TestPool_Metrics(t *testing.T) {
 	t.Run("basic metrics", func(t *testing.T) {
-		var processed int32
+		var processed atomic.Int32
 		worker := WorkerFunc[int](func(ctx context.Context, _ int) error {
 			time.Sleep(time.Millisecond) // simulate work
-			atomic.AddInt32(&processed, 1)
+			processed.Add(1)
 			return nil
 		})
 
@@ -349,7 +349,7 @@ func TestPool_Metrics(t *testing.T) {
 		require.NoError(t, p.Close(context.Background()))
 
 		stats := p.Metrics().GetStats()
-		assert.Equal(t, int(atomic.LoadInt32(&processed)), stats.Processed)
+		assert.Equal(t, int(processed.Load()), stats.Processed)
 		assert.Equal(t, 0, stats.Errors)
 		assert.Equal(t, 0, stats.Dropped)
 		assert.Greater(t, stats.ProcessingTime, time.Duration(0))
@@ -948,12 +948,12 @@ func TestMiddleware_Practical(t *testing.T) {
 			return nil
 		})
 
-		var totalTime int64
+		var totalTime atomic.Int64
 		timingMiddleware := func(next Worker[string]) Worker[string] {
 			return WorkerFunc[string](func(ctx context.Context, v string) error {
 				start := time.Now()
 				err := next.Do(ctx, v)
-				atomic.AddInt64(&totalTime, time.Since(start).Microseconds())
+				totalTime.Add(time.Since(start).Microseconds())
 				return err
 			})
 		}
@@ -964,7 +964,7 @@ func TestMiddleware_Practical(t *testing.T) {
 		p.Submit("test")
 		require.NoError(t, p.Close(context.Background()))
 
-		assert.Greater(t, atomic.LoadInt64(&totalTime), int64(1000),
+		assert.Greater(t, totalTime.Load(), int64(1000),
 			"should measure time greater than 1ms")
 	})
 }

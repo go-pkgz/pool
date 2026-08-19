@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math/rand"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -566,9 +567,9 @@ func (p *WorkerGroup[T]) Use(middlewares ...Middleware[T]) *WorkerGroup[T] {
 			// apply middlewares in order from last to first
 			// this makes first middleware outermost
 			wrapped := worker
-			for i := len(middlewares) - 1; i >= 0; i-- {
+			for _, v := range slices.Backward(middlewares) {
 				prev := wrapped
-				wrapped = middlewares[i](prev)
+				wrapped = v(prev)
 			}
 			return wrapped
 		}
@@ -577,9 +578,9 @@ func (p *WorkerGroup[T]) Use(middlewares ...Middleware[T]) *WorkerGroup[T] {
 
 	// for stateless worker, just wrap it directly
 	wrapped := p.worker
-	for i := len(middlewares) - 1; i >= 0; i-- {
+	for _, v := range slices.Backward(middlewares) {
 		prev := wrapped
-		wrapped = middlewares[i](prev)
+		wrapped = v(prev)
 	}
 	p.worker = wrapped
 	return p
