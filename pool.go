@@ -41,7 +41,8 @@ type WorkerGroup[T any] struct {
 
 	eg        *errgroup.Group
 	activated atomic.Bool
-	ctx       context.Context
+	ctx       context.Context // errgroup context, cancelled by a failing worker as well as by the caller
+	callerCtx context.Context // context passed to Go, cancelled only by the caller
 
 	sendMu sync.Mutex
 }
@@ -278,6 +279,7 @@ func (p *WorkerGroup[T]) Go(ctx context.Context) error {
 	var egCtx context.Context
 	p.eg, egCtx = errgroup.WithContext(ctx)
 	p.ctx = egCtx
+	p.callerCtx = ctx
 
 	// create metrics context for all workers
 	metricsCtx := metrics.Make(egCtx, p.poolSize)
@@ -382,12 +384,19 @@ func (p *WorkerGroup[T]) workerProc(wCtx context.Context, r workerRequest[T]) fu
 		// main processing loop
 		for {
 			if normalClosed && batchClosed {
+				// select may pick the closed channels over a ready wCtx.Done(), so caller's
+				// cancellation has to be reported here as well, otherwise an aborted run looks
+				// successful. checked on callerCtx, as wCtx is also cancelled by a failing worker
+				if ctxErr := p.callerCtx.Err(); ctxErr != nil {
+					lastErr = errors.Join(lastErr, ctxErr)
+				}
 				return p.finishWorker(wCtx, r.id, worker, lastErr, totalErrs)
 			}
 
 			select {
 			case <-wCtx.Done():
-				return p.finishWorker(wCtx, r.id, worker, wCtx.Err(), totalErrs)
+				// join, so the reported error doesn't depend on which exit the worker took
+				return p.finishWorker(wCtx, r.id, worker, errors.Join(lastErr, wCtx.Err()), totalErrs)
 
 			case v, ok := <-r.inCh:
 				if !ok {
