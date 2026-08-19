@@ -526,7 +526,8 @@ p := pool.New[string](5, worker).
 The completion callback executes when:
 - All workers have completed processing
 - Errors occurred but pool continued (`WithContinueOnError()`)
-- Skipped only on `context.Canceled` (still runs on `context.DeadlineExceeded`)
+- Skipped only when the context passed to `Go` was cancelled (still runs on `context.DeadlineExceeded`,
+  and on a worker error, which cancels the pool's internal context but not the caller's)
 
 Important notes:
 - Use `Submit` when sending items from a single goroutine

@@ -436,10 +436,17 @@ func (p *WorkerGroup[T]) finishWorker(ctx context.Context, id int, worker Worker
 
 	activeWorkers := p.activeWorkers.Add(-1)
 
-	// pool completion should be called when this is the last worker
-	// regardless of error state, except for context cancellation
-	if activeWorkers == 0 && p.poolCompleteFn != nil && !errors.Is(lastErr, context.Canceled) {
-		if e := p.poolCompleteFn(ctx); e != nil {
+	// pool completion should be called when this is the last worker regardless of error state,
+	// except when the caller cancelled. checked on callerCtx rather than on lastErr, which also
+	// carries the errgroup's cancellation after a peer worker failed
+	if activeWorkers == 0 && p.poolCompleteFn != nil && !errors.Is(p.callerCtx.Err(), context.Canceled) {
+		completeCtx := ctx
+		if p.callerCtx.Err() == nil {
+			// ctx may be cancelled because a peer worker failed, which should not stop the
+			// callback from closing the next pool. values, metrics among them, are kept
+			completeCtx = context.WithoutCancel(ctx)
+		}
+		if e := p.poolCompleteFn(completeCtx); e != nil {
 			if lastErr == nil {
 				lastErr = fmt.Errorf("complete pool func for %d failed: %w", id, e)
 			}

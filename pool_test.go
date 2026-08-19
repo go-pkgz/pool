@@ -1547,6 +1547,39 @@ func TestPool_PoolCompletion(t *testing.T) {
 			assert.False(t, completeCalled.Load(), "pool completion must not run on a cancelled pool")
 		}
 	})
+
+	t.Run("worker error still runs pool completion", func(t *testing.T) {
+		// a failing worker cancels the errgroup context, which the surviving worker sees on its
+		// next select. that must not be taken for the caller cancelling the pool
+		var completeCalled atomic.Bool
+		var completeCtxErr error
+		errFailed := errors.New("failed")
+
+		p := New[string](2, WorkerFunc[string](func(_ context.Context, v string) error {
+			if v == "fail" {
+				return errFailed
+			}
+			return nil
+		})).WithBatchSize(0).WithPoolCompleteFn(func(ctx context.Context) error {
+			completeCalled.Store(true)
+			completeCtxErr = ctx.Err()
+			return nil
+		})
+		require.NoError(t, p.Go(context.Background()))
+
+		p.Submit("ok")
+		p.Submit("fail")
+
+		<-p.ctx.Done() // the failing worker has returned and the errgroup cancelled the pool context
+
+		// the channels are still open, so the surviving worker can only leave through wCtx.Done
+		require.Eventually(t, func() bool { return p.activeWorkers.Load() == 0 }, time.Second, time.Millisecond)
+
+		err := p.Close(context.Background())
+		require.ErrorIs(t, err, errFailed)
+		assert.True(t, completeCalled.Load(), "pool completion must run when the caller did not cancel")
+		assert.NoError(t, completeCtxErr, "the callback must get a context it can still work with")
+	})
 }
 
 func TestPool_ChainedBatching(t *testing.T) {
