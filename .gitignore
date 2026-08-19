@@ -1,2 +1,14 @@
 *.prof
 pool.test
+
+# compiled example binaries
+examples/basic/basic
+examples/chunking/chunking
+examples/collector_errors/collector_errors
+examples/collectors_chain/collectors_chain
+examples/direct_chain/direct_chain
+examples/middleware/middleware
+examples/parallel_files/parallel_files
+examples/pool_completion/pool_completion
+examples/tokenizer_stateful/tokenizer_stateful
+examples/tokenizer_stateless/tokenizer_stateless
