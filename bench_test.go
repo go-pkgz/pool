@@ -36,7 +36,7 @@ func TestPoolPerf(t *testing.T) {
 
 	var egDuration time.Duration
 	t.Run("errgroup", func(t *testing.T) {
-		var count2 int32
+		var count2 atomic.Int32
 		st := time.Now()
 		defer func() {
 			egDuration = time.Since(st)
@@ -47,20 +47,20 @@ func TestPoolPerf(t *testing.T) {
 		for range 1000000 {
 			g.Go(func() error {
 				benchTask(n)
-				atomic.AddInt32(&count2, 1)
+				count2.Add(1)
 				return nil
 			})
 		}
 		require.NoError(t, g.Wait())
-		assert.Equal(t, int32(1000000), atomic.LoadInt32(&count2))
+		assert.Equal(t, int32(1000000), count2.Load())
 	})
 
 	t.Run("pool default", func(t *testing.T) {
 		// pool with 8 workers
-		var count1 int32
+		var count1 atomic.Int32
 		worker := WorkerFunc[int](func(context.Context, int) error {
 			benchTask(n)
-			atomic.AddInt32(&count1, 1)
+			count1.Add(1)
 			return nil
 		})
 
@@ -74,17 +74,17 @@ func TestPoolPerf(t *testing.T) {
 			assert.NoError(t, p.Close(ctx))
 		}()
 		require.NoError(t, p.Wait(ctx))
-		assert.Equal(t, int32(1000000), atomic.LoadInt32(&count1))
+		assert.Equal(t, int32(1000000), count1.Load())
 		t.Logf("elapsed pool: %v", time.Since(st))
 		assert.Less(t, time.Since(st), egDuration)
 	})
 
 	t.Run("pool with 100 chan size", func(t *testing.T) {
 		// pool with 8 workers
-		var count1 int32
+		var count1 atomic.Int32
 		worker := WorkerFunc[int](func(context.Context, int) error {
 			benchTask(n)
-			atomic.AddInt32(&count1, 1)
+			count1.Add(1)
 			return nil
 		})
 
@@ -98,17 +98,17 @@ func TestPoolPerf(t *testing.T) {
 			assert.NoError(t, p.Close(ctx))
 		}()
 		require.NoError(t, p.Wait(ctx))
-		assert.Equal(t, int32(1000000), atomic.LoadInt32(&count1))
+		assert.Equal(t, int32(1000000), count1.Load())
 		t.Logf("elapsed pool: %v", time.Since(st))
 		assert.Less(t, time.Since(st), egDuration)
 	})
 
 	t.Run("pool with 100 chan size and 100 batch size", func(t *testing.T) {
 		// pool with 8 workers
-		var count1 int32
+		var count1 atomic.Int32
 		worker := WorkerFunc[int](func(context.Context, int) error {
 			benchTask(n)
-			atomic.AddInt32(&count1, 1)
+			count1.Add(1)
 			return nil
 		})
 
@@ -122,17 +122,17 @@ func TestPoolPerf(t *testing.T) {
 			assert.NoError(t, p.Close(ctx))
 		}()
 		require.NoError(t, p.Wait(ctx))
-		assert.Equal(t, int32(1000000), atomic.LoadInt32(&count1))
+		assert.Equal(t, int32(1000000), count1.Load())
 		t.Logf("elapsed pool: %v", time.Since(st))
 		assert.Less(t, time.Since(st), egDuration)
 	})
 
 	t.Run("pool with 100 chan size and 100 batch size and chunking", func(t *testing.T) {
 		// pool with 8 workers
-		var count1 int32
+		var count1 atomic.Int32
 		worker := WorkerFunc[int](func(context.Context, int) error {
 			benchTask(n)
-			atomic.AddInt32(&count1, 1)
+			count1.Add(1)
 			return nil
 		})
 
@@ -148,7 +148,7 @@ func TestPoolPerf(t *testing.T) {
 			assert.NoError(t, p.Close(ctx))
 		}()
 		require.NoError(t, p.Wait(ctx))
-		assert.Equal(t, int32(1000000), atomic.LoadInt32(&count1))
+		assert.Equal(t, int32(1000000), count1.Load())
 		t.Logf("elapsed pool: %v", time.Since(st))
 		assert.Less(t, time.Since(st), egDuration)
 	})
@@ -164,29 +164,29 @@ func BenchmarkPoolCompare(b *testing.B) {
 	b.Run("errgroup", func(b *testing.B) {
 		b.ResetTimer()
 		for range b.N {
-			var count int32
+			var count atomic.Int32
 			g, _ := errgroup.WithContext(ctx)
 			g.SetLimit(workers)
 
 			for range iterations {
 				g.Go(func() error {
 					benchTask(n)
-					atomic.AddInt32(&count, 1)
+					count.Add(1)
 					return nil
 				})
 			}
 			require.NoError(b, g.Wait())
-			require.Equal(b, int32(iterations), atomic.LoadInt32(&count))
+			require.Equal(b, int32(iterations), count.Load())
 		}
 	})
 
 	b.Run("pool default", func(b *testing.B) {
 		b.ResetTimer()
 		for range b.N {
-			var count int32
+			var count atomic.Int32
 			p := New[int](workers, WorkerFunc[int](func(context.Context, int) error {
 				benchTask(n)
-				atomic.AddInt32(&count, 1)
+				count.Add(1)
 				return nil
 			}))
 
@@ -198,17 +198,17 @@ func BenchmarkPoolCompare(b *testing.B) {
 				p.Close(ctx)
 			}()
 			require.NoError(b, p.Wait(ctx))
-			require.Equal(b, int32(iterations), atomic.LoadInt32(&count))
+			require.Equal(b, int32(iterations), count.Load())
 		}
 	})
 
 	b.Run("pool with chan=100", func(b *testing.B) {
 		b.ResetTimer()
 		for range b.N {
-			var count int32
+			var count atomic.Int32
 			p := New[int](workers, WorkerFunc[int](func(context.Context, int) error {
 				benchTask(n)
-				atomic.AddInt32(&count, 1)
+				count.Add(1)
 				return nil
 			})).WithWorkerChanSize(100)
 
@@ -220,17 +220,17 @@ func BenchmarkPoolCompare(b *testing.B) {
 				p.Close(ctx)
 			}()
 			require.NoError(b, p.Wait(ctx))
-			require.Equal(b, int32(iterations), atomic.LoadInt32(&count))
+			require.Equal(b, int32(iterations), count.Load())
 		}
 	})
 
 	b.Run("pool with batching", func(b *testing.B) {
 		b.ResetTimer()
 		for range b.N {
-			var count int32
+			var count atomic.Int32
 			p := New[int](workers, WorkerFunc[int](func(context.Context, int) error {
 				benchTask(n)
-				atomic.AddInt32(&count, 1)
+				count.Add(1)
 				return nil
 			})).WithWorkerChanSize(100).WithBatchSize(100)
 
@@ -242,17 +242,17 @@ func BenchmarkPoolCompare(b *testing.B) {
 				p.Close(ctx)
 			}()
 			require.NoError(b, p.Wait(ctx))
-			require.Equal(b, int32(iterations), atomic.LoadInt32(&count))
+			require.Equal(b, int32(iterations), count.Load())
 		}
 	})
 
 	b.Run("pool with batching and chunking", func(b *testing.B) {
 		b.ResetTimer()
 		for range b.N {
-			var count int32
+			var count atomic.Int32
 			p := New[int](workers, WorkerFunc[int](func(context.Context, int) error {
 				benchTask(n)
-				atomic.AddInt32(&count, 1)
+				count.Add(1)
 				return nil
 			})).WithWorkerChanSize(100).WithBatchSize(100).WithChunkFn(func(v int) string {
 				return strconv.Itoa(v % workers)
@@ -266,7 +266,7 @@ func BenchmarkPoolCompare(b *testing.B) {
 				p.Close(ctx)
 			}()
 			require.NoError(b, p.Wait(ctx))
-			require.Equal(b, int32(iterations), atomic.LoadInt32(&count))
+			require.Equal(b, int32(iterations), count.Load())
 		}
 	})
 }
