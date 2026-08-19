@@ -1473,6 +1473,80 @@ func TestPool_PoolCompletion(t *testing.T) {
 		assert.False(t, completeCalled.Load(),
 			"pool completion should not be called on context cancellation")
 	})
+
+	t.Run("cancellation racing with channel close", func(t *testing.T) {
+		// cancelling mid-submit makes Submit drop the rest of the items. workers may still
+		// drain the closed channels before they notice the cancelled context, so the run has
+		// to report the cancellation instead of looking like a clean completion.
+		const iterations, items = 100, 50
+
+		for range iterations {
+			var processed atomic.Int32
+			var completeCalled atomic.Bool
+
+			ctx, cancel := context.WithCancel(context.Background())
+			p := New[int](2, WorkerFunc[int](func(context.Context, int) error {
+				processed.Add(1)
+				return nil
+			})).WithPoolCompleteFn(func(context.Context) error {
+				completeCalled.Store(true)
+				return nil
+			})
+			require.NoError(t, p.Go(ctx))
+
+			for i := range items / 2 {
+				p.Submit(i)
+			}
+			cancel()
+			for i := items / 2; i < items; i++ {
+				p.Submit(i) // dropped, the pool context is already cancelled
+			}
+
+			err := p.Close(context.Background())
+			if err != nil {
+				require.ErrorIs(t, err, context.Canceled)
+				assert.False(t, completeCalled.Load(), "pool completion must not run on a cancelled pool")
+				continue
+			}
+			assert.Equal(t, int32(items), processed.Load(), "nil error must mean every item was processed")
+		}
+	})
+
+	t.Run("cancellation racing with channel close, continue on error", func(t *testing.T) {
+		// a recorded worker error must not hide the cancellation, whichever exit the worker takes
+		const iterations, items = 100, 50
+		errFailed := errors.New("failed")
+
+		for range iterations {
+			var completeCalled atomic.Bool
+
+			ctx, cancel := context.WithCancel(context.Background())
+			p := New[int](1, WorkerFunc[int](func(_ context.Context, v int) error {
+				if v == 0 {
+					return errFailed
+				}
+				return nil
+			})).WithContinueOnError().WithPoolCompleteFn(func(context.Context) error {
+				completeCalled.Store(true)
+				return nil
+			})
+			require.NoError(t, p.Go(ctx))
+
+			for i := range items / 2 {
+				p.Submit(i)
+			}
+			cancel()
+			for i := items / 2; i < items; i++ {
+				p.Submit(i) // dropped, the pool context is already cancelled
+			}
+
+			err := p.Close(context.Background())
+			require.Error(t, err)
+			require.ErrorIs(t, err, context.Canceled, "cancellation must survive the recorded worker error")
+			require.ErrorIs(t, err, errFailed, "the recorded worker error must survive the cancellation")
+			assert.False(t, completeCalled.Load(), "pool completion must not run on a cancelled pool")
+		}
+	})
 }
 
 func TestPool_ChainedBatching(t *testing.T) {
