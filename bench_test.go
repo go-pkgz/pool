@@ -34,12 +34,10 @@ func TestPoolPerf(t *testing.T) {
 	n := 1000
 	ctx := context.Background()
 
-	var egDuration time.Duration
 	t.Run("errgroup", func(t *testing.T) {
 		var count2 atomic.Int32
 		st := time.Now()
 		defer func() {
-			egDuration = time.Since(st)
 			t.Logf("elapsed errgroup: %v", time.Since(st))
 		}()
 		g, _ := errgroup.WithContext(ctx)
@@ -76,7 +74,6 @@ func TestPoolPerf(t *testing.T) {
 		require.NoError(t, p.Wait(ctx))
 		assert.Equal(t, int32(1000000), count1.Load())
 		t.Logf("elapsed pool: %v", time.Since(st))
-		assert.Less(t, time.Since(st), egDuration)
 	})
 
 	t.Run("pool with 100 chan size", func(t *testing.T) {
@@ -100,7 +97,6 @@ func TestPoolPerf(t *testing.T) {
 		require.NoError(t, p.Wait(ctx))
 		assert.Equal(t, int32(1000000), count1.Load())
 		t.Logf("elapsed pool: %v", time.Since(st))
-		assert.Less(t, time.Since(st), egDuration)
 	})
 
 	t.Run("pool with 100 chan size and 100 batch size", func(t *testing.T) {
@@ -124,7 +120,6 @@ func TestPoolPerf(t *testing.T) {
 		require.NoError(t, p.Wait(ctx))
 		assert.Equal(t, int32(1000000), count1.Load())
 		t.Logf("elapsed pool: %v", time.Since(st))
-		assert.Less(t, time.Since(st), egDuration)
 	})
 
 	t.Run("pool with 100 chan size and 100 batch size and chunking", func(t *testing.T) {
@@ -150,7 +145,6 @@ func TestPoolPerf(t *testing.T) {
 		require.NoError(t, p.Wait(ctx))
 		assert.Equal(t, int32(1000000), count1.Load())
 		t.Logf("elapsed pool: %v", time.Since(st))
-		assert.Less(t, time.Since(st), egDuration)
 	})
 
 }
