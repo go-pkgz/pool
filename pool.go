@@ -45,6 +45,11 @@ type WorkerGroup[T any] struct {
 	ctx       context.Context // errgroup context, cancelled by a failing worker as well as by the caller
 	callerCtx context.Context // context passed to Go, cancelled only by the caller
 
+	// completeErr holds what poolCompleteFn returned. kept apart from the errgroup, which retains
+	// the first worker error only and would drop a completion failure reported after it.
+	// written by the last worker to finish, read once eg.Wait has returned
+	completeErr error
+
 	sendMu sync.Mutex
 }
 
@@ -436,13 +441,24 @@ func (p *WorkerGroup[T]) finishWorker(ctx context.Context, id int, worker Worker
 
 	activeWorkers := p.activeWorkers.Add(-1)
 
-	// pool completion should be called when this is the last worker
-	// regardless of error state, except for context cancellation
-	if activeWorkers == 0 && p.poolCompleteFn != nil && !errors.Is(lastErr, context.Canceled) {
-		if e := p.poolCompleteFn(ctx); e != nil {
-			if lastErr == nil {
-				lastErr = fmt.Errorf("complete pool func for %d failed: %w", id, e)
-			}
+	// pool completion should be called when this is the last worker regardless of error state,
+	// except when the caller cancelled. checked on callerCtx rather than on lastErr, which also
+	// carries the errgroup's cancellation after a peer worker failed
+	if activeWorkers == 0 && p.poolCompleteFn != nil && !errors.Is(p.callerCtx.Err(), context.Canceled) {
+		completeCtx := ctx
+		if ctx.Err() != nil && p.callerCtx.Err() == nil {
+			// ctx is cancelled because a peer worker failed, which should not stop the callback
+			// from closing the next pool. values, metrics among them, are kept, and the caller's
+			// own cancellation is bridged back so a blocking callback still ends when asked to
+			var cancel context.CancelFunc
+			completeCtx, cancel = context.WithCancel(context.WithoutCancel(ctx))
+			defer cancel()
+			//nolint:contextcheck // callerCtx is deliberate, it is the only context left that the caller still controls
+			stop := context.AfterFunc(p.callerCtx, cancel)
+			defer stop()
+		}
+		if e := p.poolCompleteFn(completeCtx); e != nil {
+			p.completeErr = fmt.Errorf("complete pool func for %d failed: %w", id, e)
 		}
 	}
 
@@ -450,6 +466,13 @@ func (p *WorkerGroup[T]) finishWorker(ctx context.Context, id int, worker Worker
 		return fmt.Errorf("total errors: %d, last error: %w", totalErrs, lastErr)
 	}
 	return nil
+}
+
+// waitWorkers waits for every worker and adds the pool completion error, which the errgroup
+// cannot carry because it keeps the first error only.
+func (p *WorkerGroup[T]) waitWorkers() error {
+	err := p.eg.Wait()
+	return errors.Join(err, p.completeErr)
 }
 
 // Close pool. Has to be called by consumer as the indication of "all records submitted".
@@ -476,7 +499,7 @@ func (p *WorkerGroup[T]) Close(ctx context.Context) error {
 	// wait for workers with context respect
 	done := make(chan error, 1)
 	go func() {
-		done <- p.eg.Wait()
+		done <- p.waitWorkers()
 	}()
 
 	select {
@@ -531,7 +554,7 @@ func (p *WorkerGroup[T]) Wait(ctx context.Context) error {
 	// wait for workers with context respect
 	done := make(chan error, 1)
 	go func() {
-		done <- p.eg.Wait()
+		done <- p.waitWorkers()
 	}()
 
 	select {
