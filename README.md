@@ -529,6 +529,11 @@ The completion callback executes when:
 - Skipped only when the context passed to `Go` was cancelled (still runs on `context.DeadlineExceeded`,
   and on a worker error, which cancels the pool's internal context but not the caller's)
 
+After a worker error the callback receives a context that is no longer cancelled by that error, so it can
+still close the next pool in a chain. Cancelling the context passed to `Go` cancels it as well, so a
+callback that blocks can always be stopped. An error returned by the callback is reported alongside the
+worker error rather than replacing it.
+
 Important notes:
 - Use `Submit` when sending items from a single goroutine
 - Use `Send` when workers need to submit items to another pool

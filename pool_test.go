@@ -1580,6 +1580,68 @@ func TestPool_PoolCompletion(t *testing.T) {
 		assert.True(t, completeCalled.Load(), "pool completion must run when the caller did not cancel")
 		assert.NoError(t, completeCtxErr, "the callback must get a context it can still work with")
 	})
+
+	t.Run("caller cancellation reaches a running completion callback", func(t *testing.T) {
+		// the callback runs on a context stripped of the peer worker's cancellation, so the
+		// caller's own cancellation has to be bridged into it or a blocking callback never ends
+		started, unblocked := make(chan struct{}), make(chan struct{})
+		errFailed := errors.New("failed")
+
+		callerCtx, cancelCaller := context.WithCancel(context.Background())
+		defer cancelCaller()
+
+		p := New[string](2, WorkerFunc[string](func(_ context.Context, v string) error {
+			if v == "fail" {
+				return errFailed
+			}
+			return nil
+		})).WithBatchSize(0).WithPoolCompleteFn(func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+			close(unblocked)
+			return nil
+		})
+		require.NoError(t, p.Go(callerCtx))
+
+		p.Submit("ok")
+		p.Submit("fail")
+
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("pool completion never started")
+		}
+
+		cancelCaller()
+
+		select {
+		case <-unblocked:
+		case <-time.After(time.Second):
+			t.Fatal("pool completion did not observe the caller cancelling")
+		}
+
+		require.ErrorIs(t, p.Close(context.Background()), errFailed)
+	})
+
+	t.Run("completion error reported alongside a worker error", func(t *testing.T) {
+		// lastErr is already set on this path, the completion failure must not be swallowed
+		errFailed, errComplete := errors.New("failed"), errors.New("complete failed")
+
+		p := New[string](2, WorkerFunc[string](func(_ context.Context, v string) error {
+			if v == "fail" {
+				return errFailed
+			}
+			return nil
+		})).WithBatchSize(0).WithPoolCompleteFn(func(context.Context) error { return errComplete })
+		require.NoError(t, p.Go(context.Background()))
+
+		p.Submit("ok")
+		p.Submit("fail")
+
+		err := p.Close(context.Background())
+		require.ErrorIs(t, err, errFailed, "the worker error must still be reported")
+		require.ErrorIs(t, err, errComplete, "the completion error must not be dropped")
+	})
 }
 
 func TestPool_ChainedBatching(t *testing.T) {
