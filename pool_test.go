@@ -1642,6 +1642,82 @@ func TestPool_PoolCompletion(t *testing.T) {
 		require.ErrorIs(t, err, errFailed, "the worker error must still be reported")
 		require.ErrorIs(t, err, errComplete, "the completion error must not be dropped")
 	})
+
+	t.Run("peer error landing during completion does not cancel it", func(t *testing.T) {
+		// a failing worker counts itself out before its error reaches the errgroup, so the last
+		// worker can start completion on a live pool context that the peer's error then cancels.
+		// drives finishWorker directly, as nothing outside it can hold the peer in that window
+		type ctxKey struct{}
+		errPeer, errCaller := errors.New("peer failed"), errors.New("caller stopped")
+		started, check, checked := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		var afterPeerErr, afterCallerCause error
+		var value any
+
+		p := New[string](1, WorkerFunc[string](func(context.Context, string) error { return nil })).
+			WithPoolCompleteFn(func(ctx context.Context) error {
+				close(started)
+				<-check
+				afterPeerErr, value = ctx.Err(), ctx.Value(ctxKey{})
+				close(checked)
+				<-ctx.Done()
+				afterCallerCause = context.Cause(ctx)
+				return nil
+			})
+		callerCtx, callerCancel := context.WithCancelCause(context.Background())
+		defer callerCancel(nil)
+		p.callerCtx = callerCtx
+		p.activeWorkers.Store(1)
+		workerCtx, peerFailed := context.WithCancelCause(context.WithValue(callerCtx, ctxKey{}, "worker"))
+		defer peerFailed(nil)
+
+		done := make(chan error, 1)
+		go func() { done <- p.finishWorker(workerCtx, 0, p.worker, nil, 0) }()
+		waitClosed(t, started, "pool completion never started")
+		peerFailed(errPeer)
+		close(check)
+		waitClosed(t, checked, "pool completion never checked its context")
+		callerCancel(errCaller)
+
+		require.NoError(t, <-done)
+		assert.NoError(t, afterPeerErr, "a peer error must not cancel a running completion callback")
+		assert.Equal(t, "worker", value, "the callback must keep the worker context's values")
+		assert.ErrorIs(t, afterCallerCause, errCaller, "the callback context must carry the caller's cause")
+	})
+
+	t.Run("completion keeps the caller's deadline", func(t *testing.T) {
+		for _, fail := range []bool{false, true} {
+			t.Run(fmt.Sprintf("worker error %v", fail), func(t *testing.T) {
+				errFailed := errors.New("failed")
+				var gotDeadline, hasDeadline atomic.Bool
+				callerCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+				defer cancel()
+				want, _ := callerCtx.Deadline()
+
+				p := New[string](2, WorkerFunc[string](func(context.Context, string) error {
+					if fail {
+						return errFailed
+					}
+					return nil
+				})).WithBatchSize(0).WithPoolCompleteFn(func(ctx context.Context) error {
+					dl, ok := ctx.Deadline()
+					hasDeadline.Store(ok)
+					gotDeadline.Store(dl.Equal(want))
+					return nil
+				})
+				require.NoError(t, p.Go(callerCtx))
+				p.Submit("item")
+
+				err := p.Close(context.Background())
+				if fail {
+					require.ErrorIs(t, err, errFailed)
+				} else {
+					require.NoError(t, err)
+				}
+				assert.True(t, hasDeadline.Load(), "the callback must see the caller's deadline")
+				assert.True(t, gotDeadline.Load(), "the deadline must be the caller's")
+			})
+		}
+	})
 }
 
 func TestPool_ChainedBatching(t *testing.T) {
@@ -1916,4 +1992,14 @@ func TestPool_WorkerCompleteFnErrorWithExistingError(t *testing.T) {
 	require.Error(t, err)
 	// worker complete function should have been called
 	assert.True(t, completeCalled.Load(), "worker complete function should be called")
+}
+
+// waitClosed fails the test if ch is not closed within a second
+func waitClosed(t *testing.T, ch <-chan struct{}, msg string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal(msg)
+	}
 }

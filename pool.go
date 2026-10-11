@@ -445,19 +445,8 @@ func (p *WorkerGroup[T]) finishWorker(ctx context.Context, id int, worker Worker
 	// except when the caller cancelled. checked on callerCtx rather than on lastErr, which also
 	// carries the errgroup's cancellation after a peer worker failed
 	if activeWorkers == 0 && p.poolCompleteFn != nil && !errors.Is(p.callerCtx.Err(), context.Canceled) {
-		completeCtx := ctx
-		if ctx.Err() != nil && p.callerCtx.Err() == nil {
-			// ctx is cancelled because a peer worker failed, which should not stop the callback
-			// from closing the next pool. values, metrics among them, are kept, and the caller's
-			// own cancellation is bridged back so a blocking callback still ends when asked to
-			var cancel context.CancelFunc
-			completeCtx, cancel = context.WithCancel(context.WithoutCancel(ctx))
-			defer cancel()
-			//nolint:contextcheck // callerCtx is deliberate, it is the only context left that the caller still controls
-			stop := context.AfterFunc(p.callerCtx, cancel)
-			defer stop()
-		}
-		if e := p.poolCompleteFn(completeCtx); e != nil {
+		//nolint:contextcheck // callerCtx is deliberate, it is the only context the caller alone controls
+		if e := p.poolCompleteFn(newCompletionCtx(p.callerCtx, ctx)); e != nil {
 			p.completeErr = fmt.Errorf("complete pool func for %d failed: %w", id, e)
 		}
 	}
@@ -466,6 +455,30 @@ func (p *WorkerGroup[T]) finishWorker(ctx context.Context, id int, worker Worker
 		return fmt.Errorf("total errors: %d, last error: %w", totalErrs, lastErr)
 	}
 	return nil
+}
+
+// completionCtx is the context of the pool completion callback. cancellation, deadline and cause
+// come from the context passed to Go and values, metrics among them, from the worker context. the
+// worker context is also cancelled by a failing peer worker, which may happen before or after the
+// last worker starts the callback, so it can't decide whether the callback keeps running
+type completionCtx struct {
+	context.Context // caller's context: Deadline, Done, Err
+	values          context.Context
+}
+
+// newCompletionCtx makes the completion context from the caller's and the worker's contexts
+func newCompletionCtx(callerCtx, workerCtx context.Context) completionCtx {
+	return completionCtx{Context: callerCtx, values: context.WithoutCancel(workerCtx)}
+}
+
+// Value returns the worker context's value for key, falling back to the caller's context. the
+// worker context is derived from the caller's, so the fallback only finds what WithoutCancel hides,
+// the caller's cancellation, which context.Cause and derived contexts look up through Value
+func (c completionCtx) Value(key any) any {
+	if v := c.values.Value(key); v != nil {
+		return v
+	}
+	return c.Context.Value(key)
 }
 
 // waitWorkers waits for every worker and adds the pool completion error, which the errgroup
