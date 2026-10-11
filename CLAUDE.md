@@ -35,7 +35,7 @@ Generic worker pool library for Go 1.24+ with batching, work distribution, and m
 - **collector.go** - `Collector[V]` for async result gathering
 - **metrics/** - Stats tracking (processed, errors, timings, custom counters)
 - **middleware/** - Built-in middleware (Retry, Timeout, Recovery, Validator, RateLimiter)
-- **examples/** - Usage examples (separate go.mod, excluded from tests)
+- **examples/** - Usage examples (separate go.mod, excluded from tests). After bumping the pool version there, run `go mod tidy` with the `replace` line temporarily removed: with it in place tidy drops the pool checksums from go.sum, and an example copied out of the tree then fails with "missing go.sum entry"
 
 ### Core Types
 
@@ -162,7 +162,7 @@ type Collector[V any] struct {
 - Default: first error stops pool (errgroup behavior)
 - `WithContinueOnError()`: accumulates errors, returns last error with total count
 - Worker completion callbacks only run if no error or `continueOnError` is set
-- Pool completion callback runs when last worker finishes (skipped only on `context.Canceled`, still runs on `context.DeadlineExceeded`)
+- Pool completion callback runs when last worker finishes (skipped only when the context passed to `Go` was cancelled; still runs on `context.DeadlineExceeded` and after a worker error). Its context takes cancellation, deadline and cause from the context passed to `Go` and values from the worker context; its error is kept in `completeErr` and joined to the worker error in `waitWorkers`
 
 ### Key Implementation Details
 
