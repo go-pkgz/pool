@@ -482,9 +482,16 @@ func (c completionCtx) Value(key any) any {
 }
 
 // waitWorkers waits for every worker and adds the pool completion error, which the errgroup
-// cannot carry because it keeps the first error only.
+// cannot carry because it keeps the first error only. A lone error is returned as is, a join
+// of one would hide it from errors.Unwrap.
 func (p *WorkerGroup[T]) waitWorkers() error {
 	err := p.eg.Wait()
+	if p.completeErr == nil {
+		return err
+	}
+	if err == nil {
+		return p.completeErr
+	}
 	return errors.Join(err, p.completeErr)
 }
 
