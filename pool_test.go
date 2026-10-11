@@ -1643,6 +1643,39 @@ func TestPool_PoolCompletion(t *testing.T) {
 		require.ErrorIs(t, err, errComplete, "the completion error must not be dropped")
 	})
 
+	t.Run("lone error is not wrapped in a join", func(t *testing.T) {
+		// a single error came back as a one-element join, so errors.Unwrap on it returned nil
+		errFailed, errComplete := errors.New("failed"), errors.New("complete failed")
+		tests := []struct {
+			name        string
+			workerErr   error
+			completeErr error
+		}{
+			{name: "worker error only", workerErr: errFailed},
+			{name: "completion error only", completeErr: errComplete},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				p := New[string](1, WorkerFunc[string](func(context.Context, string) error { return tt.workerErr })).
+					WithPoolCompleteFn(func(context.Context) error { return tt.completeErr })
+				require.NoError(t, p.Go(context.Background()))
+				p.Submit("item")
+
+				err := p.Close(context.Background())
+				require.Error(t, err)
+				_, joined := err.(interface{ Unwrap() []error })
+				assert.False(t, joined, "a lone error must be returned as is")
+				require.Error(t, errors.Unwrap(err))
+				if tt.workerErr != nil {
+					require.ErrorIs(t, err, tt.workerErr)
+				}
+				if tt.completeErr != nil {
+					require.ErrorIs(t, err, tt.completeErr)
+				}
+			})
+		}
+	})
+
 	t.Run("peer error landing during completion does not cancel it", func(t *testing.T) {
 		// a failing worker counts itself out before its error reaches the errgroup, so the last
 		// worker can start completion on a live pool context that the peer's error then cancels.
